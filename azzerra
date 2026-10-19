@@ -1,0 +1,1 @@
+sudo truncate -s 0 /var/lib/penguins-census/census.jsonl
