@@ -116,11 +116,14 @@ func TestCensusPostAndGet(t *testing.T) {
 	}
 
 	// 4. GET summary and verify counts
-	reqGet := httptest.NewRequest(http.MethodGet, "/api/census", nil)
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
 	wGet := httptest.NewRecorder()
 	srv.ServeHTTP(wGet, reqGet)
 	if wGet.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK on GET, got %d", wGet.Code)
+	}
+	if !strings.Contains(wGet.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("expected application/json Content-Type, got %q", wGet.Header().Get("Content-Type"))
 	}
 
 	var summary CensusSummary
@@ -133,6 +136,12 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.UniqueMachines != 2 {
 		t.Errorf("expected unique_machines=2, got %d", summary.UniqueMachines)
 	}
+	if summary.CloneCount != 1 {
+		t.Errorf("expected clone_count=1, got %d", summary.CloneCount)
+	}
+	if summary.CoexistCount != 1 {
+		t.Errorf("expected coexist_count=1, got %d", summary.CoexistCount)
+	}
 	if summary.ByAction["remaster"] != 2 || summary.ByAction["sysinstall"] != 1 {
 		t.Errorf("unexpected by_action: %+v", summary.ByAction)
 	}
@@ -142,11 +151,155 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.ByArch["amd64"] != 2 || summary.ByArch["arm64"] != 1 {
 		t.Errorf("unexpected by_arch: %+v", summary.ByArch)
 	}
+	if summary.ByDesktop["xfce"] != 2 || summary.ByDesktop["gnome"] != 1 {
+		t.Errorf("unexpected by_desktop: %+v", summary.ByDesktop)
+	}
+	if summary.ByVirt["none"] != 2 || summary.ByVirt["kvm"] != 1 {
+		t.Errorf("unexpected by_virt: %+v", summary.ByVirt)
+	}
+	if summary.ByInit["systemd"] != 3 {
+		t.Errorf("unexpected by_init: %+v", summary.ByInit)
+	}
+	if summary.ByCompression["zstd"] != 2 || summary.ByCompression["xz"] != 1 {
+		t.Errorf("unexpected by_compression: %+v", summary.ByCompression)
+	}
 	if summary.ByCountry["XX"] != 3 {
 		t.Errorf("unexpected by_country: %+v", summary.ByCountry)
 	}
 	if summary.ByVersion["10.0.50"] != 2 || summary.ByVersion["10.1.0"] != 1 {
 		t.Errorf("unexpected by_version: %+v", summary.ByVersion)
+	}
+}
+
+func TestCensusFormatsAndFallbacks(t *testing.T) {
+	tmpDir := t.TempDir()
+	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
+	defer srv.Close()
+
+	// Post event with empty desktop and empty virt to verify fallback defaults
+	events := []string{
+		`{"uuid":"u1","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"","virt":"","init":"systemd"},"options":{"clone":true,"compression":"zstd","coexist":false}}`,
+		`{"uuid":"u2","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"kde","virt":"kvm","init":"systemd"},"options":{"clone":false,"compression":"xz","coexist":true}}`,
+		`{"uuid":"u3","eggs_version":"10.0.9","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"arch":"arm64","desktop":"kde","virt":"","init":"openrc"},"options":{"clone":false,"compression":"zstd","coexist":false}}`,
+	}
+	for _, ev := range events {
+		req := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(ev))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST failed: %d", w.Code)
+		}
+	}
+
+	// 1. ?format=json
+	reqJSON := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wJSON := httptest.NewRecorder()
+	srv.ServeHTTP(wJSON, reqJSON)
+	if wJSON.Code != http.StatusOK {
+		t.Fatalf("expected 200 for ?format=json, got %d", wJSON.Code)
+	}
+	var sum CensusSummary
+	if err := json.Unmarshal(wJSON.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("failed to decode ?format=json: %v", err)
+	}
+	if sum.ByDesktop["headless/cli"] != 1 || sum.ByDesktop["kde"] != 2 {
+		t.Errorf("expected headless/cli=1 and kde=2, got %+v", sum.ByDesktop)
+	}
+	if sum.ByVirt["physical/none"] != 2 || sum.ByVirt["kvm"] != 1 {
+		t.Errorf("expected physical/none=2 and kvm=1, got %+v", sum.ByVirt)
+	}
+
+	// 2. ?format=txt and User-Agent: curl/8.5.0
+	for _, tc := range []struct {
+		name string
+		url  string
+		ua   string
+	}{
+		{name: "query format=txt", url: "/api/census?format=txt", ua: "Mozilla/5.0"},
+		{name: "curl user-agent", url: "/api/census", ua: "curl/8.5.0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reqTxt := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			if tc.ua != "" {
+				reqTxt.Header.Set("User-Agent", tc.ua)
+			}
+			wTxt := httptest.NewRecorder()
+			srv.ServeHTTP(wTxt, reqTxt)
+			if wTxt.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", wTxt.Code)
+			}
+			ct := wTxt.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "text/plain") {
+				t.Errorf("expected text/plain Content-Type, got %q", ct)
+			}
+			body := wTxt.Body.String()
+			for _, expected := range []string{
+				"Total Events:    3",
+				"Unique Machines: 3",
+				"### Action",
+				"### Distro",
+				"### Arch",
+				"### Desktop",
+				"### Virt",
+				"### Init",
+				"### Country",
+				"### Version",
+				"headless/cli",
+				"physical/none",
+			} {
+				if !strings.Contains(body, expected) {
+					t.Errorf("expected text report to contain %q, got:\n%s", expected, body)
+				}
+			}
+			// Verify ranking: debian (2) appears before ubuntu (1)
+			idxDebian := strings.Index(body, "debian")
+			idxUbuntu := strings.Index(body, "ubuntu")
+			if idxDebian == -1 || idxUbuntu == -1 || idxDebian > idxUbuntu {
+				t.Errorf("expected debian (count 2) to be ranked before ubuntu (count 1)")
+			}
+		})
+	}
+
+	// 3. ?format=html and Accept: text/html
+	for _, tc := range []struct {
+		name   string
+		url    string
+		accept string
+	}{
+		{name: "query format=html", url: "/api/census?format=html", accept: ""},
+		{name: "browser Accept text/html", url: "/api/census", accept: "text/html,application/xhtml+xml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reqHTML := httptest.NewRequest(http.MethodGet, tc.url, nil)
+			if tc.accept != "" {
+				reqHTML.Header.Set("Accept", tc.accept)
+			}
+			wHTML := httptest.NewRecorder()
+			srv.ServeHTTP(wHTML, reqHTML)
+			if wHTML.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", wHTML.Code)
+			}
+			ct := wHTML.Header().Get("Content-Type")
+			if !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("expected text/html Content-Type, got %q", ct)
+			}
+			body := wHTML.Body.String()
+			for _, expected := range []string{
+				"<!DOCTYPE html>",
+				"Total Events",
+				"Unique Machines",
+				"Remasters",
+				"Installations",
+				"Copy for AI Analysis",
+				`<pre id="ai-report">`,
+				"headless/cli",
+				"physical/none",
+			} {
+				if !strings.Contains(body, expected) {
+					t.Errorf("expected HTML dashboard to contain %q", expected)
+				}
+			}
+		})
 	}
 }
 
