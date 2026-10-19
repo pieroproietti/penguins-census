@@ -1,0 +1,21 @@
+[Unit]
+Description=Penguins Census anonymous telemetry server for penguins-eggs
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/lib/penguins-census
+ExecStart=/usr/bin/penguins-census
+Restart=on-failure
+RestartSec=5s
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/penguins-census
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+Package: penguins-census
+Version: 0.1.0-1
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Piero Proietti <piero.proietti@gmail.com>
+Depends: ca-certificates, curl, gzip
+Description: Privacy-respecting anonymous telemetry server for penguins-eggs
+ penguins-census receives anonymous remaster and installation events from
+ penguins-eggs, resolves only a 2-letter ISO country code in memory without
+ storing client IP addresses, and exposes aggregated JSON statistics.

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        mkdir -p /var/lib/penguins-census
+        chown www-data:www-data /var/lib/penguins-census
+        chmod 0750 /var/lib/penguins-census
+
+        if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable penguins-census.service >/dev/null 2>&1 || true
+            systemctl restart penguins-census.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+exit 0

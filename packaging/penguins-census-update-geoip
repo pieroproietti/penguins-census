@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+DATA_DIR="/var/lib/penguins-census"
+MMDB_PATH="${DATA_DIR}/dbip-country.mmdb"
+TMP_GZ="${DATA_DIR}/dbip-country.mmdb.gz.tmp"
+TMP_MMDB="${DATA_DIR}/dbip-country.mmdb.tmp"
+YEAR_MONTH="$(date +%Y-%m)"
+URL="https://download.db-ip.com/free/dbip-country-lite-${YEAR_MONTH}.mmdb.gz"
+
+mkdir -p "${DATA_DIR}"
+
+echo "Downloading DB-IP Country Lite MMDB from ${URL}..."
+curl -fsSL "${URL}" -o "${TMP_GZ}"
+gzip -dc "${TMP_GZ}" > "${TMP_MMDB}"
+rm -f "${TMP_GZ}"
+
+mv -f "${TMP_MMDB}" "${MMDB_PATH}"
+chown www-data:www-data "${MMDB_PATH}"
+chmod 0640 "${MMDB_PATH}"
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart penguins-census.service || true
+fi
+
+echo "Updated ${MMDB_PATH} and restarted penguins-census."
