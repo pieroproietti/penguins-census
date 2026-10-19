@@ -716,6 +716,13 @@ func writePrettyJSON(w http.ResponseWriter, v any) {
 	_, _ = w.Write(out)
 }
 
+func resetCensusData(dataPath string) error {
+	if err := os.Truncate(dataPath, 0); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func main() {
 	defaultAddr := os.Getenv("CENSUS_ADDR")
 	if defaultAddr == "" {
@@ -725,7 +732,16 @@ func main() {
 	addr := flag.String("addr", defaultAddr, "HTTP listen address (env CENSUS_ADDR)")
 	dataPath := flag.String("data", "/var/lib/penguins-census/census.jsonl", "Path to census JSONL file")
 	mmdbPath := flag.String("mmdb", "/var/lib/penguins-census/dbip-country.mmdb", "Path to GeoIP MMDB file")
+	reset := flag.Bool("reset", false, "Reset (truncate) all census counts and exit")
 	flag.Parse()
+
+	if *reset {
+		if err := resetCensusData(*dataPath); err != nil {
+			log.Fatalf("failed to reset census data (%s): %v", *dataPath, err)
+		}
+		fmt.Printf("Census data reset: %s\n", *dataPath)
+		return
+	}
 
 	srv := NewCensusServer(*dataPath, *mmdbPath)
 	defer srv.Close()

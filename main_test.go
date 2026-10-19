@@ -381,3 +381,53 @@ func TestConcurrentWrites(t *testing.T) {
 		t.Fatalf("expected %d events and 1 unique machine, got %+v", workers, summary)
 	}
 }
+
+func TestResetCensusData(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+
+	// Reset on non-existent file should succeed without creating a file
+	if err := resetCensusData(dataFile); err != nil {
+		t.Fatalf("expected nil error on missing file, got %v", err)
+	}
+	if _, err := os.Stat(dataFile); !os.IsNotExist(err) {
+		t.Fatalf("expected missing file to stay uncreated after reset")
+	}
+
+	srv := NewCensusServer(dataFile, "")
+	defer srv.Close()
+
+	// Post an event
+	body := `{"uuid":"u-reset","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64"}}`
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(body))
+	wPost := httptest.NewRecorder()
+	srv.ServeHTTP(wPost, reqPost)
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("POST failed: %d", wPost.Code)
+	}
+
+	// Reset census data
+	if err := resetCensusData(dataFile); err != nil {
+		t.Fatalf("resetCensusData failed: %v", err)
+	}
+
+	// Verify file is truncated to 0 bytes and GET returns 0 counts
+	info, err := os.Stat(dataFile)
+	if err != nil {
+		t.Fatalf("stat failed after reset: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("expected 0 bytes after reset, got %d", info.Size())
+	}
+
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	var summary CensusSummary
+	if err := json.Unmarshal(wGet.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if summary.TotalEvents != 0 || summary.UniqueMachines != 0 {
+		t.Fatalf("expected 0 events after reset, got %+v", summary)
+	}
+}

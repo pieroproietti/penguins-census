@@ -70,6 +70,12 @@ sudo penguins-census-update-geoip
 sudo systemctl status penguins-census
 ```
 
+To reset all collected census counts to zero (truncating `/var/lib/penguins-census/census.jsonl` in place while preserving file permissions):
+
+```bash
+sudo penguins-census -reset
+```
+
 ## License
 
 MIT — Copyright (c) 2026 Piero Proietti
