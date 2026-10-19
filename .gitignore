@@ -31,5 +31,7 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
-build
-
+# Build artifacts and Debian packages
+build/
+/penguins-census
+*.deb
