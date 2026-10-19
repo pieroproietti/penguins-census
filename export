@@ -1,0 +1,1 @@
+scp penguins-census_*.deb artisan@penguins-eggs.net:/home/artisan
