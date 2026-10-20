@@ -292,13 +292,64 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Unique Machines",
 				"Remasters",
 				"Installations",
-				"Copy for AI Analysis",
-				`<pre id="ai-report">`,
+				"Clones",
 				"headless/cli",
 				"physical/none",
 			} {
 				if !strings.Contains(body, expected) {
 					t.Errorf("expected HTML dashboard to contain %q", expected)
+				}
+			}
+			if strings.Contains(body, "ai-report") {
+				t.Errorf("expected HTML dashboard to not contain ai-report section")
+			}
+			if strings.Contains(body, "Coexist") {
+				t.Errorf("expected HTML dashboard to not display Coexist")
+			}
+
+			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, compression, action, arch, version
+			headers := []string{
+				`id="country"`,
+				`id="distro"`,
+				`id="desktop"`,
+				`id="virtualization"`,
+				`id="init-system"`,
+				`id="compression"`,
+				`id="action"`,
+				`id="arch"`,
+				`id="version"`,
+			}
+			lastIdx := -1
+			for _, h := range headers {
+				idx := strings.Index(body, h)
+				if idx == -1 {
+					t.Errorf("expected section anchor %s in HTML dashboard", h)
+				} else if idx <= lastIdx {
+					t.Errorf("expected anchor %s (pos %d) to appear after previous anchor (pos %d)", h, idx, lastIdx)
+				}
+				lastIdx = idx
+			}
+
+			// Verify card anchors and table aliases
+			for _, expectedAnchor := range []string{
+				`id="overview"`,
+				`id="total-events"`,
+				`id="unique-machines"`,
+				`id="remasters"`,
+				`id="remaster"`,
+				`id="installations"`,
+				`id="sysinstall"`,
+				`id="clones"`,
+				`id="clone"`,
+				`id="virt"`,
+				`id="init"`,
+				`id="eggs-version"`,
+				`href="#country"`,
+				`href="#distro"`,
+				`href="#desktop"`,
+			} {
+				if !strings.Contains(body, expectedAnchor) {
+					t.Errorf("expected HTML dashboard to contain anchor %q", expectedAnchor)
 				}
 			}
 		})

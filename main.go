@@ -438,26 +438,31 @@ func renderTextSummary(s CensusSummary) string {
 	fmt.Fprintf(&buf, "- Unique Machines: %d\n", s.UniqueMachines)
 	fmt.Fprintf(&buf, "- Remasters:       %d\n", s.ByAction["remaster"])
 	fmt.Fprintf(&buf, "- Installations:   %d\n", s.ByAction["sysinstall"])
-	fmt.Fprintf(&buf, "- Clone Count:     %d\n", s.CloneCount)
-	fmt.Fprintf(&buf, "- Coexist Count:   %d\n\n", s.CoexistCount)
+	fmt.Fprintf(&buf, "- Clone Count:     %d\n\n", s.CloneCount)
 
-	writeMarkdownTable(&buf, "Action", "Action", s.ByAction, s.TotalEvents)
+	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeMarkdownTable(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
-	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
 	writeMarkdownTable(&buf, "Virt", "Virt", s.ByVirt, s.TotalEvents)
 	writeMarkdownTable(&buf, "Init", "Init", s.ByInit, s.TotalEvents)
 	writeMarkdownTable(&buf, "Compression", "Compression", s.ByCompression, s.TotalEvents)
-	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
+	writeMarkdownTable(&buf, "Action", "Action", s.ByAction, s.TotalEvents)
+	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
 	return buf.String()
 }
 
-func writeHTMLTableCard(buf *bytes.Buffer, title, colName string, m map[string]int, total int) {
+func writeHTMLTableCard(buf *bytes.Buffer, id, title, colName string, m map[string]int, total int, aliases ...string) {
 	rows := sortedRows(m, total)
-	fmt.Fprintf(buf, `<section class="panel"><h2>%s</h2><table><thead><tr><th>%s</th><th class="num">Count</th><th class="num">Share</th></tr></thead><tbody>`,
-		html.EscapeString(title), html.EscapeString(colName))
+	fmt.Fprintf(buf, `<section class="panel" id="%s">`, html.EscapeString(id))
+	for _, alias := range aliases {
+		if alias != "" {
+			fmt.Fprintf(buf, `<span id="%s" class="anchor-alias"></span>`, html.EscapeString(alias))
+		}
+	}
+	fmt.Fprintf(buf, `<h2><a href="#%s" class="anchor-link">%s</a></h2><table><thead><tr><th>%s</th><th class="num">Count</th><th class="num">Share</th></tr></thead><tbody>`,
+		html.EscapeString(id), html.EscapeString(title), html.EscapeString(colName))
 	if len(rows) == 0 {
 		buf.WriteString(`<tr><td colspan="3" class="empty">No events recorded yet</td></tr>`)
 	} else {
@@ -471,7 +476,6 @@ func writeHTMLTableCard(buf *bytes.Buffer, title, colName string, m map[string]i
 
 func renderHTMLSummary(s CensusSummary) string {
 	var buf bytes.Buffer
-	mdReport := renderTextSummary(s)
 
 	buf.WriteString(`<!DOCTYPE html>
 <html lang="en">
@@ -490,6 +494,9 @@ func renderHTMLSummary(s CensusSummary) string {
   --accent-bg: rgba(56, 189, 248, 0.16);
 }
 * { box-sizing: border-box; }
+html {
+  scroll-behavior: smooth;
+}
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -552,6 +559,12 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
+  scroll-margin-top: 1.5rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.card:target, .panel:target {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-bg);
 }
 .card-label {
   color: var(--muted);
@@ -576,11 +589,28 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 1rem 1.25rem;
+  scroll-margin-top: 1.5rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 .panel h2 {
   margin: 0 0 0.75rem 0;
   font-size: 1.05rem;
   color: var(--text);
+}
+.anchor-link {
+  color: inherit;
+  text-decoration: none;
+}
+.anchor-link:hover {
+  color: var(--accent);
+}
+.anchor-alias {
+  display: block;
+  position: relative;
+  top: -1.5rem;
+  height: 0;
+  width: 0;
+  visibility: hidden;
 }
 table {
   width: 100%;
@@ -620,30 +650,6 @@ th {
   height: 100%;
   background: var(--accent);
 }
-.ai-section {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem 1.25rem;
-}
-.ai-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
-}
-pre {
-  margin: 0;
-  padding: 1rem;
-  background: #0b1120;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow-x: auto;
-  font-size: 0.82rem;
-  color: #e2e8f0;
-}
 </style>
 </head>
 <body>
@@ -656,56 +662,35 @@ pre {
     <div class="links">
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
-      <button class="btn" id="copy-ai-btn" type="button" onclick="copyForAI()">Copy for AI Analysis</button>
     </div>
   </header>
 `)
 
-	fmt.Fprintf(&buf, `  <div class="cards">
-    <div class="card"><div class="card-label">Total Events</div><div class="card-value">%d</div></div>
-    <div class="card"><div class="card-label">Unique Machines</div><div class="card-value">%d</div></div>
-    <div class="card"><div class="card-label">Remasters</div><div class="card-value">%d</div></div>
-    <div class="card"><div class="card-label">Installations</div><div class="card-value">%d</div></div>
-    <div class="card"><div class="card-label">Clones</div><div class="card-value">%d</div></div>
-    <div class="card"><div class="card-label">Coexist</div><div class="card-value">%d</div></div>
+	fmt.Fprintf(&buf, `  <div class="cards" id="overview">
+    <div class="card" id="total-events"><div class="card-label">Total Events</div><div class="card-value">%d</div></div>
+    <div class="card" id="unique-machines"><div class="card-label">Unique Machines</div><div class="card-value">%d</div></div>
+    <div class="card" id="remasters"><span id="remaster" class="anchor-alias"></span><div class="card-label">Remasters</div><div class="card-value">%d</div></div>
+    <div class="card" id="installations"><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><div class="card-label">Installations</div><div class="card-value">%d</div></div>
+    <div class="card" id="clones"><span id="clone" class="anchor-alias"></span><div class="card-label">Clones</div><div class="card-value">%d</div></div>
   </div>
   <div class="grid">
-`, s.TotalEvents, s.UniqueMachines, s.ByAction["remaster"], s.ByAction["sysinstall"], s.CloneCount, s.CoexistCount)
+`, s.TotalEvents, s.UniqueMachines, s.ByAction["remaster"], s.ByAction["sysinstall"], s.CloneCount)
 
-	writeHTMLTableCard(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Virtualization", "Virt", s.ByVirt, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Eggs Version", "Version", s.ByVersion, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Action", "Action", s.ByAction, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Init System", "Init", s.ByInit, s.TotalEvents)
-	writeHTMLTableCard(&buf, "Compression", "Compression", s.ByCompression, s.TotalEvents)
+	writeHTMLTableCard(&buf, "country", "Country", "Country", s.ByCountry, s.TotalEvents)
+	writeHTMLTableCard(&buf, "distro", "Distro", "Distro", s.ByDistro, s.TotalEvents)
+	writeHTMLTableCard(&buf, "desktop", "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
+	writeHTMLTableCard(&buf, "virtualization", "Virtualization", "Virt", s.ByVirt, s.TotalEvents, "virt")
+	writeHTMLTableCard(&buf, "init-system", "Init System", "Init", s.ByInit, s.TotalEvents, "init")
+	writeHTMLTableCard(&buf, "compression", "Compression", "Compression", s.ByCompression, s.TotalEvents)
+	writeHTMLTableCard(&buf, "action", "Action", "Action", s.ByAction, s.TotalEvents)
+	writeHTMLTableCard(&buf, "arch", "Arch", "Arch", s.ByArch, s.TotalEvents)
+	writeHTMLTableCard(&buf, "version", "Eggs Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
 
-	fmt.Fprintf(&buf, `  </div>
-  <section class="ai-section">
-    <div class="ai-header">
-      <strong>Markdown / Text Report (AI Analysis Ready)</strong>
-      <button class="btn" type="button" onclick="copyForAI()">Copy for AI Analysis</button>
-    </div>
-    <pre id="ai-report">%s</pre>
-  </section>
+	buf.WriteString(`  </div>
 </div>
-<script>
-function copyForAI() {
-  var text = document.getElementById('ai-report').innerText;
-  var btn = document.getElementById('copy-ai-btn');
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(function() {
-      btn.textContent = 'Copied!';
-      setTimeout(function() { btn.textContent = 'Copy for AI Analysis'; }, 2000);
-    });
-  }
-}
-</script>
 </body>
 </html>
-`, html.EscapeString(mdReport))
+`)
 
 	return buf.String()
 }
