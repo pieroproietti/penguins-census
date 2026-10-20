@@ -1,0 +1,2 @@
+scp artisan@penguins-eggs.net:/var/lib/penguins-census/census.jsonl .
+
