@@ -56,6 +56,10 @@ type CensusRecord struct {
 type CensusSummary struct {
 	TotalEvents    int            `json:"total_events"`
 	UniqueMachines int            `json:"unique_machines"`
+	TotalCountries int            `json:"total_countries"`
+	TotalDistros   int            `json:"total_distros"`
+	CountryCount   int            `json:"country,omitempty"`
+	DistroCount    int            `json:"distro,omitempty"`
 	CloneCount     int            `json:"clone_count"`
 	CoexistCount   int            `json:"coexist_count"`
 	ByAction       map[string]int `json:"by_action"`
@@ -327,6 +331,10 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	summary.UniqueMachines = len(uniqueUUIDs)
+	summary.TotalCountries = len(summary.ByCountry)
+	summary.TotalDistros = len(summary.ByDistro)
+	summary.CountryCount = summary.TotalCountries
+	summary.DistroCount = summary.TotalDistros
 	respondSummary(w, r, summary)
 }
 
