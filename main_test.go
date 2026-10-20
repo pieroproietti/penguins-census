@@ -286,6 +286,8 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			body := wHTML.Body.String()
 			for _, expected := range []string{
 				"<!DOCTYPE html>",
+				"Penguins Eggs Worldwide Usage",
+				"Since 19 October 2026",
 				"Total Events",
 				"Unique Machines",
 				"Remasters",

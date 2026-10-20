@@ -650,8 +650,8 @@ pre {
 <div class="container">
   <header>
     <div>
-      <h1>Penguins Eggs Anonymous Census</h1>
-      <div class="subtitle">Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
+      <h1>Penguins Eggs Worldwide Usage</h1>
+      <div class="subtitle">Since 19 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
     </div>
     <div class="links">
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>

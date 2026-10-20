@@ -1,5 +1,5 @@
 PACKAGE  := penguins-census
-VERSION  ?= 0.2.0-1
+VERSION  ?= 0.2.1-1
 ARCH     ?= amd64
 DEB_NAME := $(PACKAGE)_$(VERSION)_$(ARCH).deb
 STAGE    := build/deb/$(PACKAGE)_$(VERSION)_$(ARCH)
