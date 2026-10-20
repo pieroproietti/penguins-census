@@ -446,7 +446,6 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Virt", "Virt", s.ByVirt, s.TotalEvents)
 	writeMarkdownTable(&buf, "Init", "Init", s.ByInit, s.TotalEvents)
 	writeMarkdownTable(&buf, "Compression", "Compression", s.ByCompression, s.TotalEvents)
-	writeMarkdownTable(&buf, "Action", "Action", s.ByAction, s.TotalEvents)
 	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
@@ -660,6 +659,8 @@ th {
       <div class="subtitle">Since 19 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
     </div>
     <div class="links">
+      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
+      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
     </div>
@@ -682,7 +683,6 @@ th {
 	writeHTMLTableCard(&buf, "virtualization", "Virtualization", "Virt", s.ByVirt, s.TotalEvents, "virt")
 	writeHTMLTableCard(&buf, "init-system", "Init System", "Init", s.ByInit, s.TotalEvents, "init")
 	writeHTMLTableCard(&buf, "compression", "Compression", "Compression", s.ByCompression, s.TotalEvents)
-	writeHTMLTableCard(&buf, "action", "Action", "Action", s.ByAction, s.TotalEvents)
 	writeHTMLTableCard(&buf, "arch", "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeHTMLTableCard(&buf, "version", "Eggs Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
 

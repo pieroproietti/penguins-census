@@ -236,7 +236,8 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			for _, expected := range []string{
 				"Total Events:    3",
 				"Unique Machines: 3",
-				"### Action",
+				"Remasters:       2",
+				"Installations:   1",
 				"### Distro",
 				"### Arch",
 				"### Desktop",
@@ -250,6 +251,9 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				if !strings.Contains(body, expected) {
 					t.Errorf("expected text report to contain %q, got:\n%s", expected, body)
 				}
+			}
+			if strings.Contains(body, "### Action") {
+				t.Errorf("expected text report to not contain Action table, got:\n%s", body)
 			}
 			// Verify ranking: debian (2) appears before ubuntu (1)
 			idxDebian := strings.Index(body, "debian")
@@ -288,6 +292,10 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"<!DOCTYPE html>",
 				"Penguins Eggs Worldwide Usage",
 				"Since 19 October 2026",
+				"https://penguins-eggs.net",
+				"https://github.com/pieroproietti/penguins-eggs",
+				"Home",
+				"Repository",
 				"Total Events",
 				"Unique Machines",
 				"Remasters",
@@ -307,7 +315,11 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				t.Errorf("expected HTML dashboard to not display Coexist")
 			}
 
-			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, compression, action, arch, version
+			if strings.Contains(body, `id="action"`) {
+				t.Errorf("expected HTML dashboard to not display Action table")
+			}
+
+			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, compression, arch, version
 			headers := []string{
 				`id="country"`,
 				`id="distro"`,
@@ -315,7 +327,6 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				`id="virtualization"`,
 				`id="init-system"`,
 				`id="compression"`,
-				`id="action"`,
 				`id="arch"`,
 				`id="version"`,
 			}
