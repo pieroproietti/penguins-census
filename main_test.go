@@ -169,6 +169,26 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.ByVersion["10.0.50"] != 2 || summary.ByVersion["10.1.0"] != 1 {
 		t.Errorf("unexpected by_version: %+v", summary.ByVersion)
 	}
+
+	// 5. Verify recent events (last 3, newest first)
+	if len(summary.RecentEvents) != 3 {
+		t.Fatalf("expected 3 recent events, got %d", len(summary.RecentEvents))
+	}
+	// Most recent (event 3): arch, gnome, remaster
+	if summary.RecentEvents[0].Country != "XX" || summary.RecentEvents[0].Distro != "arch" ||
+		summary.RecentEvents[0].Desktop != "gnome" || !summary.RecentEvents[0].Remaster || summary.RecentEvents[0].Sysinstall {
+		t.Errorf("unexpected recent_events[0]: %+v", summary.RecentEvents[0])
+	}
+	// Second recent (event 2): debian, xfce, sysinstall
+	if summary.RecentEvents[1].Country != "XX" || summary.RecentEvents[1].Distro != "debian" ||
+		summary.RecentEvents[1].Desktop != "xfce" || summary.RecentEvents[1].Remaster || !summary.RecentEvents[1].Sysinstall {
+		t.Errorf("unexpected recent_events[1]: %+v", summary.RecentEvents[1])
+	}
+	// Third recent (event 1): debian, xfce, remaster
+	if summary.RecentEvents[2].Country != "XX" || summary.RecentEvents[2].Distro != "debian" ||
+		summary.RecentEvents[2].Desktop != "xfce" || !summary.RecentEvents[2].Remaster || summary.RecentEvents[2].Sysinstall {
+		t.Errorf("unexpected recent_events[2]: %+v", summary.RecentEvents[2])
+	}
 }
 
 func TestCensusFormatsAndFallbacks(t *testing.T) {
@@ -293,14 +313,18 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Penguins Eggs Worldwide Usage",
 				"Since 19 October 2026",
 				"https://penguins-eggs.net",
+				"https://penguins-eggs.net/access/",
 				"https://github.com/pieroproietti/penguins-eggs",
 				"Home",
+				"Site",
 				"Repository",
 				"Total Events",
 				"Unique Machines",
 				"Remasters",
 				"Installations",
 				"Clones",
+				"Recent Events",
+				"id=\"recent-events\"",
 				"headless/cli",
 				"physical/none",
 			} {
@@ -493,5 +517,88 @@ func TestResetCensusData(t *testing.T) {
 	}
 	if summary.TotalEvents != 0 || summary.UniqueMachines != 0 {
 		t.Fatalf("expected 0 events after reset, got %+v", summary)
+	}
+	if len(summary.RecentEvents) != 0 {
+		t.Fatalf("expected 0 recent events after reset, got %d", len(summary.RecentEvents))
+	}
+}
+
+func TestRecentEventsLimitAndOrder(t *testing.T) {
+	tmpDir := t.TempDir()
+	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
+	defer srv.Close()
+
+	// Post 5 events in sequence
+	events := []string{
+		`{"uuid":"u1","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"desktop":"xfce"}}`,
+		`{"uuid":"u2","eggs_version":"10.0","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"desktop":"gnome"}}`,
+		`{"uuid":"u3","eggs_version":"10.0","action":"remaster","distro":{"id":"arch"},"system":{"desktop":"kde"}}`,
+		`{"uuid":"u4","eggs_version":"10.0","action":"sysinstall","distro":{"id":"fedora"},"system":{"desktop":"cinnamon"}}`,
+		`{"uuid":"u5","eggs_version":"10.0","action":"remaster","distro":{"id":"manjaro"},"system":{"desktop":"mate"}}`,
+	}
+	for _, ev := range events {
+		req := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(ev))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST failed: %d", w.Code)
+		}
+	}
+
+	// Verify JSON format has exactly 3 recent events: u5, u4, u3
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("GET failed: %d", wGet.Code)
+	}
+
+	var sum CensusSummary
+	if err := json.Unmarshal(wGet.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("JSON decode error: %v", err)
+	}
+	if sum.TotalEvents != 5 {
+		t.Fatalf("expected 5 total events, got %d", sum.TotalEvents)
+	}
+	if len(sum.RecentEvents) != 3 {
+		t.Fatalf("expected 3 recent events, got %d", len(sum.RecentEvents))
+	}
+
+	// 1st recent event should be manjaro (from event 5)
+	if sum.RecentEvents[0].Distro != "manjaro" || sum.RecentEvents[0].Desktop != "mate" ||
+		!sum.RecentEvents[0].Remaster || sum.RecentEvents[0].Sysinstall {
+		t.Errorf("expected 1st recent event to be manjaro/remaster, got %+v", sum.RecentEvents[0])
+	}
+
+	// 2nd recent event should be fedora (from event 4)
+	if sum.RecentEvents[1].Distro != "fedora" || sum.RecentEvents[1].Desktop != "cinnamon" ||
+		sum.RecentEvents[1].Remaster || !sum.RecentEvents[1].Sysinstall {
+		t.Errorf("expected 2nd recent event to be fedora/sysinstall, got %+v", sum.RecentEvents[1])
+	}
+
+	// 3rd recent event should be arch (from event 3)
+	if sum.RecentEvents[2].Distro != "arch" || sum.RecentEvents[2].Desktop != "kde" ||
+		!sum.RecentEvents[2].Remaster || sum.RecentEvents[2].Sysinstall {
+		t.Errorf("expected 3rd recent event to be arch/remaster, got %+v", sum.RecentEvents[2])
+	}
+
+	// Verify HTML contains the recent events table with rows
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	htmlBody := wHTML.Body.String()
+	for _, expected := range []string{
+		"Recent Events",
+		"manjaro",
+		"fedora",
+		"arch",
+		"mate",
+		"cinnamon",
+		"kde",
+		"&#10003;", // checkmark for remaster/sysinstall
+	} {
+		if !strings.Contains(htmlBody, expected) {
+			t.Errorf("expected HTML to contain %q", expected)
+		}
 	}
 }

@@ -53,6 +53,14 @@ type CensusRecord struct {
 	Options     OptionsInfo `json:"options"`
 }
 
+type RecentEvent struct {
+	Country    string `json:"country"`
+	Distro     string `json:"distro"`
+	Desktop    string `json:"desktop"`
+	Remaster   bool   `json:"remaster"`
+	Sysinstall bool   `json:"sysinstall"`
+}
+
 type CensusSummary struct {
 	TotalEvents    int            `json:"total_events"`
 	UniqueMachines int            `json:"unique_machines"`
@@ -62,6 +70,7 @@ type CensusSummary struct {
 	DistroCount    int            `json:"distro,omitempty"`
 	CloneCount     int            `json:"clone_count"`
 	CoexistCount   int            `json:"coexist_count"`
+	RecentEvents   []RecentEvent  `json:"recent_events"`
 	ByAction       map[string]int `json:"by_action"`
 	ByDistro       map[string]int `json:"by_distro"`
 	ByArch         map[string]int `json:"by_arch"`
@@ -247,6 +256,7 @@ func (s *CensusServer) appendLine(line []byte) error {
 
 func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	summary := CensusSummary{
+		RecentEvents:  make([]RecentEvent, 0),
 		ByAction:      make(map[string]int),
 		ByDistro:      make(map[string]int),
 		ByArch:        make(map[string]int),
@@ -258,6 +268,7 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		ByVersion:     make(map[string]int),
 	}
 	uniqueUUIDs := make(map[string]struct{})
+	var lastRecords []CensusRecord
 
 	s.mu.Lock()
 	f, err := os.Open(s.dataPath)
@@ -282,6 +293,10 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		var rec CensusRecord
 		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
 			continue
+		}
+		lastRecords = append(lastRecords, rec)
+		if len(lastRecords) > 3 {
+			lastRecords = lastRecords[1:]
 		}
 		summary.TotalEvents++
 		if rec.UUID != "" {
@@ -329,6 +344,29 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = f.Close()
 	s.mu.Unlock()
+
+	for i := len(lastRecords) - 1; i >= 0; i-- {
+		r := lastRecords[i]
+		country := strings.TrimSpace(r.Country)
+		if country == "" {
+			country = "XX"
+		}
+		distro := strings.TrimSpace(r.Distro.ID)
+		if distro == "" {
+			distro = "unknown"
+		}
+		desktop := strings.TrimSpace(r.System.Desktop)
+		if desktop == "" {
+			desktop = "headless/cli"
+		}
+		summary.RecentEvents = append(summary.RecentEvents, RecentEvent{
+			Country:    country,
+			Distro:     distro,
+			Desktop:    desktop,
+			Remaster:   r.Action == "remaster",
+			Sysinstall: r.Action == "sysinstall",
+		})
+	}
 
 	summary.UniqueMachines = len(uniqueUUIDs)
 	summary.TotalCountries = len(summary.ByCountry)
@@ -449,7 +487,31 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
+	writeMarkdownRecentEvents(&buf, s.RecentEvents)
+
 	return buf.String()
+}
+
+func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
+	fmt.Fprintf(buf, "### Recent Events\n\n")
+	fmt.Fprintf(buf, "| Country | Distro | Desktop | Remaster | Sysinstall |\n")
+	fmt.Fprintf(buf, "|---------|--------|---------|:--------:|:----------:|\n")
+	if len(events) == 0 {
+		fmt.Fprintf(buf, "| (no data) | - | - | - | - |\n\n")
+		return
+	}
+	for _, ev := range events {
+		rem := "-"
+		if ev.Remaster {
+			rem = "✓"
+		}
+		sys := "-"
+		if ev.Sysinstall {
+			sys = "✓"
+		}
+		fmt.Fprintf(buf, "| %-7s | %-6s | %-7s | %-8s | %-10s |\n", ev.Country, ev.Distro, ev.Desktop, rem, sys)
+	}
+	buf.WriteString("\n")
 }
 
 func writeHTMLTableCard(buf *bytes.Buffer, id, title, colName string, m map[string]int, total int, aliases ...string) {
@@ -471,6 +533,44 @@ func writeHTMLTableCard(buf *bytes.Buffer, id, title, colName string, m map[stri
 		}
 	}
 	buf.WriteString(`</tbody></table></section>`)
+}
+
+func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
+	buf.WriteString(`  <section class="panel" id="recent-events">
+    <h2><a href="#recent-events" class="anchor-link">Recent Events</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th class="center">Remaster</th>
+          <th class="center">Sysinstall</th>
+        </tr>
+      </thead>
+      <tbody>
+`)
+	if len(events) == 0 {
+		buf.WriteString(`        <tr><td colspan="5" class="empty">No events recorded yet</td></tr>
+`)
+	} else {
+		for _, e := range events {
+			rem := `<span class="muted">&mdash;</span>`
+			if e.Remaster {
+				rem = `<span class="check">&#10003;</span>`
+			}
+			sys := `<span class="muted">&mdash;</span>`
+			if e.Sysinstall {
+				sys = `<span class="check">&#10003;</span>`
+			}
+			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
+`, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), rem, sys)
+		}
+	}
+	buf.WriteString(`      </tbody>
+    </table>
+  </section>
+`)
 }
 
 func renderHTMLSummary(s CensusSummary) string {
@@ -633,6 +733,19 @@ th {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.center {
+  text-align: center;
+}
+.check {
+  color: var(--accent);
+  font-weight: bold;
+}
+.muted {
+  color: var(--muted);
+}
+#recent-events {
+  margin-bottom: 1.75rem;
+}
 .empty {
   color: var(--muted);
   text-align: center;
@@ -660,6 +773,7 @@ th {
     </div>
     <div class="links">
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
+      <a class="btn" href="https://penguins-eggs.net/access/" target="_blank" rel="noopener">Site</a>
       <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
@@ -687,7 +801,11 @@ th {
 	writeHTMLTableCard(&buf, "version", "Eggs Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
 
 	buf.WriteString(`  </div>
-</div>
+`)
+
+	writeHTMLRecentEvents(&buf, s.RecentEvents)
+
+	buf.WriteString(`</div>
 </body>
 </html>
 `)
