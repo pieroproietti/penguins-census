@@ -602,3 +602,140 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 		}
 	}
 }
+
+func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+
+	srv := NewCensusServer(dataFile, "")
+	defer srv.Close()
+
+	// Post events:
+	// - UUID u1 does sysinstall on openkylin in IT (twice, should be counted ONCE)
+	// - UUID u2 does sysinstall on openkylin in IT (once)
+	// -> openkylin IT should have sum_sysinstall = 2
+	// - UUID u3 does sysinstall on debian in IT
+	// - UUID u4 does remaster on debian in IT (action=remaster, should NOT count towards sysinstall)
+	// - UUID u5 does sysinstall on ubuntu in US
+	// - UUID u6 does sysinstall on arch in DE
+	events := []string{
+		`{"timestamp":"2026-10-21T09:00:00Z","uuid":"u1","country":"IT","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"openkylin"},"system":{"arch":"amd64","desktop":"cli"}}`,
+		`{"timestamp":"2026-10-21T09:01:00Z","uuid":"u1","country":"IT","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"openkylin"},"system":{"arch":"amd64","desktop":"cli"}}`,
+		`{"timestamp":"2026-10-21T09:02:00Z","uuid":"u2","country":"IT","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"openkylin"},"system":{"arch":"amd64","desktop":"cli"}}`,
+		`{"timestamp":"2026-10-21T09:03:00Z","uuid":"u3","country":"IT","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"xfce"}}`,
+		`{"timestamp":"2026-10-21T09:04:00Z","uuid":"u4","country":"IT","eggs_version":"v26.10.21","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"xfce"}}`,
+		`{"timestamp":"2026-10-21T09:05:00Z","uuid":"u5","country":"US","eggs_version":"v26.10.20","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"arch":"amd64","desktop":"gnome"}}`,
+		`{"timestamp":"2026-10-21T09:06:00Z","uuid":"u6","country":"DE","eggs_version":"v26.10.19","action":"sysinstall","distro":{"id":"arch"},"system":{"arch":"arm64","desktop":"kde"}}`,
+	}
+
+	content := strings.Join(events, "\n") + "\n"
+	if err := os.WriteFile(dataFile, []byte(content), 0640); err != nil {
+		t.Fatalf("failed to write dataFile: %v", err)
+	}
+
+	// 1. Verify JSON summary
+	reqJSON := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wJSON := httptest.NewRecorder()
+	srv.ServeHTTP(wJSON, reqJSON)
+	if wJSON.Code != http.StatusOK {
+		t.Fatalf("GET json failed: %d", wJSON.Code)
+	}
+
+	var summary CensusSummary
+	if err := json.Unmarshal(wJSON.Body.Bytes(), &summary); err != nil {
+		t.Fatalf("failed to decode JSON: %v", err)
+	}
+
+	if len(summary.TopInstallations) != 4 {
+		t.Fatalf("expected 4 distinct sysinstall combinations, got %d: %+v", len(summary.TopInstallations), summary.TopInstallations)
+	}
+
+	// Top 1 must be openkylin IT with sum_sysinstall = 2
+	top1 := summary.TopInstallations[0]
+	if top1.Distro != "openkylin" || top1.Country != "IT" || top1.Desktop != "cli" ||
+		top1.Arch != "amd64" || top1.EggsVersion != "v26.10.21" || top1.SumSysinstall != 2 {
+		t.Errorf("unexpected top 1: %+v", top1)
+	}
+
+	// 2. Verify plain text / markdown output contains the table with required columns
+	reqTxt := httptest.NewRequest(http.MethodGet, "/api/census?format=txt", nil)
+	wTxt := httptest.NewRecorder()
+	srv.ServeHTTP(wTxt, reqTxt)
+	txtBody := wTxt.Body.String()
+
+	for _, col := range []string{
+		"### Top 10 Installations (sysinstall)",
+		"Country",
+		"Distro",
+		"Desktop",
+		"Arch",
+		"Eggs Version",
+		"sum_sysinstall",
+		"openkylin",
+		"debian",
+		"ubuntu",
+		"arch",
+	} {
+		if !strings.Contains(txtBody, col) {
+			t.Errorf("expected text report to contain %q, got:\n%s", col, txtBody)
+		}
+	}
+
+	// Verify Top 10 Installations appears before Recent Events, with Recent Events at the very end
+	idxTop := strings.Index(txtBody, "### Top 10 Installations (sysinstall)")
+	idxRecent := strings.Index(txtBody, "### Recent Events")
+	if idxRecent == -1 || idxTop == -1 || idxRecent <= idxTop {
+		t.Errorf("expected Top 10 Installations to appear before Recent Events (Recent Events in finale) in text summary")
+	}
+
+	// 3. Verify HTML output
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	htmlBody := wHTML.Body.String()
+
+	idxHTMLTop := strings.Index(htmlBody, `id="top-installations"`)
+	idxHTMLRecent := strings.Index(htmlBody, `id="recent-events"`)
+	if idxHTMLTop == -1 || idxHTMLRecent == -1 || idxHTMLRecent <= idxHTMLTop {
+		t.Errorf("expected top-installations panel to appear before recent-events panel in HTML")
+	}
+
+	if !strings.Contains(htmlBody, `id="top-installations"`) {
+		t.Errorf("expected HTML to contain id=\"top-installations\"")
+	}
+	if !strings.Contains(htmlBody, "openkylin") {
+		t.Errorf("expected HTML to contain openkylin")
+	}
+}
+
+func TestTopInstallationsFromDirectory(t *testing.T) {
+	logDir := t.TempDir()
+
+	file1 := filepath.Join(logDir, "day1.jsonl")
+	file2 := filepath.Join(logDir, "day2.jsonl")
+
+	data1 := `{"uuid":"uuid-a","country":"FR","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"xfce"}}` + "\n"
+	data2 := `{"uuid":"uuid-b","country":"FR","eggs_version":"v26.10.21","action":"sysinstall","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"xfce"}}` + "\n"
+
+	if err := os.WriteFile(file1, []byte(data1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file2, []byte(data2), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := loadCensusSummary(logDir)
+	if err != nil {
+		t.Fatalf("loadCensusSummary failed on directory: %v", err)
+	}
+
+	if summary.TotalEvents != 2 {
+		t.Fatalf("expected 2 total events, got %d", summary.TotalEvents)
+	}
+	if len(summary.TopInstallations) != 1 {
+		t.Fatalf("expected 1 top installation group, got %d", len(summary.TopInstallations))
+	}
+	if summary.TopInstallations[0].SumSysinstall != 2 {
+		t.Fatalf("expected sum_sysinstall=2, got %d", summary.TopInstallations[0].SumSysinstall)
+	}
+}

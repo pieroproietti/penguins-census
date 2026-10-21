@@ -61,25 +61,35 @@ type RecentEvent struct {
 	Sysinstall bool   `json:"sysinstall"`
 }
 
+type TopInstallation struct {
+	Country       string `json:"country"`
+	Distro        string `json:"distro"`
+	Desktop       string `json:"desktop"`
+	Arch          string `json:"arch"`
+	EggsVersion   string `json:"eggs_version"`
+	SumSysinstall int    `json:"sum_sysinstall"`
+}
+
 type CensusSummary struct {
-	TotalEvents    int            `json:"total_events"`
-	UniqueMachines int            `json:"unique_machines"`
-	TotalCountries int            `json:"total_countries"`
-	TotalDistros   int            `json:"total_distros"`
-	CountryCount   int            `json:"country,omitempty"`
-	DistroCount    int            `json:"distro,omitempty"`
-	CloneCount     int            `json:"clone_count"`
-	CoexistCount   int            `json:"coexist_count"`
-	RecentEvents   []RecentEvent  `json:"recent_events"`
-	ByAction       map[string]int `json:"by_action"`
-	ByDistro       map[string]int `json:"by_distro"`
-	ByArch         map[string]int `json:"by_arch"`
-	ByDesktop      map[string]int `json:"by_desktop"`
-	ByVirt         map[string]int `json:"by_virt"`
-	ByInit         map[string]int `json:"by_init"`
-	ByCompression  map[string]int `json:"by_compression"`
-	ByCountry      map[string]int `json:"by_country"`
-	ByVersion      map[string]int `json:"by_version"`
+	TotalEvents      int               `json:"total_events"`
+	UniqueMachines   int               `json:"unique_machines"`
+	TotalCountries   int               `json:"total_countries"`
+	TotalDistros     int               `json:"total_distros"`
+	CountryCount     int               `json:"country,omitempty"`
+	DistroCount      int               `json:"distro,omitempty"`
+	CloneCount       int               `json:"clone_count"`
+	CoexistCount     int               `json:"coexist_count"`
+	RecentEvents     []RecentEvent     `json:"recent_events"`
+	TopInstallations []TopInstallation `json:"top_installations"`
+	ByAction         map[string]int    `json:"by_action"`
+	ByDistro         map[string]int    `json:"by_distro"`
+	ByArch           map[string]int    `json:"by_arch"`
+	ByDesktop        map[string]int    `json:"by_desktop"`
+	ByVirt           map[string]int    `json:"by_virt"`
+	ByInit           map[string]int    `json:"by_init"`
+	ByCompression    map[string]int    `json:"by_compression"`
+	ByCountry        map[string]int    `json:"by_country"`
+	ByVersion        map[string]int    `json:"by_version"`
 }
 
 type TableRow struct {
@@ -238,13 +248,18 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *CensusServer) appendLine(line []byte) error {
-	dir := filepath.Dir(s.dataPath)
+	target := s.dataPath
+	fi, err := os.Stat(target)
+	if err == nil && fi.IsDir() {
+		target = filepath.Join(target, "census.jsonl")
+	}
+	dir := filepath.Dir(target)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0750); err != nil {
 			return err
 		}
 	}
-	f, err := os.OpenFile(s.dataPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0640)
 	if err != nil {
 		return err
 	}
@@ -254,53 +269,90 @@ func (s *CensusServer) appendLine(line []byte) error {
 	return err
 }
 
-func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
-	summary := CensusSummary{
-		RecentEvents:  make([]RecentEvent, 0),
-		ByAction:      make(map[string]int),
-		ByDistro:      make(map[string]int),
-		ByArch:        make(map[string]int),
-		ByDesktop:     make(map[string]int),
-		ByVirt:        make(map[string]int),
-		ByInit:        make(map[string]int),
-		ByCompression: make(map[string]int),
-		ByCountry:     make(map[string]int),
-		ByVersion:     make(map[string]int),
-	}
-	uniqueUUIDs := make(map[string]struct{})
-	var lastRecords []CensusRecord
-
-	s.mu.Lock()
-	f, err := os.Open(s.dataPath)
+func forEachLogLine(dataPath string, handleLine func(line []byte)) error {
+	info, err := os.Stat(dataPath)
 	if err != nil {
-		s.mu.Unlock()
-		if !os.IsNotExist(err) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"error":"failed to read census data"}`))
-			return
-		}
-		respondSummary(w, r, summary)
-		return
+		return err
 	}
+
+	if info.IsDir() {
+		entries, err := os.ReadDir(dataPath)
+		if err != nil {
+			return err
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].Name() < entries[j].Name()
+		})
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			filePath := filepath.Join(dataPath, entry.Name())
+			if err := scanSingleLogFile(filePath, handleLine); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return scanSingleLogFile(dataPath, handleLine)
+}
+
+func scanSingleLogFile(filePath string, handleLine func(line []byte)) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
 	for scanner.Scan() {
-		raw := strings.TrimSpace(scanner.Text())
-		if raw == "" {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
 			continue
 		}
+		handleLine(line)
+	}
+	return scanner.Err()
+}
+
+func loadCensusSummary(dataPath string) (CensusSummary, error) {
+	summary := CensusSummary{
+		RecentEvents:     make([]RecentEvent, 0),
+		TopInstallations: make([]TopInstallation, 0),
+		ByAction:         make(map[string]int),
+		ByDistro:         make(map[string]int),
+		ByArch:           make(map[string]int),
+		ByDesktop:        make(map[string]int),
+		ByVirt:           make(map[string]int),
+		ByInit:           make(map[string]int),
+		ByCompression:    make(map[string]int),
+		ByCountry:        make(map[string]int),
+		ByVersion:        make(map[string]int),
+	}
+	uniqueUUIDs := make(map[string]struct{})
+	uniqueSysinstalls := make(map[string]CensusRecord)
+	var lastRecords []CensusRecord
+
+	err := forEachLogLine(dataPath, func(line []byte) {
 		var rec CensusRecord
-		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-			continue
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return
 		}
 		lastRecords = append(lastRecords, rec)
 		if len(lastRecords) > 3 {
 			lastRecords = lastRecords[1:]
 		}
 		summary.TotalEvents++
-		if rec.UUID != "" {
-			uniqueUUIDs[rec.UUID] = struct{}{}
+		uuid := strings.TrimSpace(rec.UUID)
+		if uuid != "" {
+			uniqueUUIDs[uuid] = struct{}{}
+			if rec.Action == "sysinstall" {
+				uniqueSysinstalls[uuid] = rec
+			}
 		}
 		if rec.Action != "" {
 			summary.ByAction[rec.Action]++
@@ -341,9 +393,11 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		if rec.EggsVersion != "" {
 			summary.ByVersion[rec.EggsVersion]++
 		}
+	})
+
+	if err != nil && !os.IsNotExist(err) {
+		return summary, err
 	}
-	_ = f.Close()
-	s.mu.Unlock()
 
 	for i := len(lastRecords) - 1; i >= 0; i-- {
 		r := lastRecords[i]
@@ -373,6 +427,98 @@ func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	summary.TotalDistros = len(summary.ByDistro)
 	summary.CountryCount = summary.TotalCountries
 	summary.DistroCount = summary.TotalDistros
+
+	// Aggregate unique sysinstall installations
+	type groupKey struct {
+		country     string
+		distro      string
+		desktop     string
+		arch        string
+		eggsVersion string
+	}
+	groupCounts := make(map[groupKey]int)
+	for _, r := range uniqueSysinstalls {
+		country := strings.TrimSpace(r.Country)
+		if country == "" {
+			country = "XX"
+		}
+		distro := strings.TrimSpace(r.Distro.ID)
+		if distro == "" {
+			distro = "unknown"
+		}
+		desktop := strings.TrimSpace(r.System.Desktop)
+		if desktop == "" {
+			desktop = "headless/cli"
+		}
+		arch := strings.TrimSpace(r.System.Arch)
+		if arch == "" {
+			arch = "unknown"
+		}
+		ver := strings.TrimSpace(r.EggsVersion)
+		if ver == "" {
+			ver = "unknown"
+		}
+		key := groupKey{
+			country:     country,
+			distro:      distro,
+			desktop:     desktop,
+			arch:        arch,
+			eggsVersion: ver,
+		}
+		groupCounts[key]++
+	}
+
+	topList := make([]TopInstallation, 0, len(groupCounts))
+	for k, count := range groupCounts {
+		topList = append(topList, TopInstallation{
+			Country:       k.country,
+			Distro:        k.distro,
+			Desktop:       k.desktop,
+			Arch:          k.arch,
+			EggsVersion:   k.eggsVersion,
+			SumSysinstall: count,
+		})
+	}
+
+	sort.Slice(topList, func(i, j int) bool {
+		if topList[i].SumSysinstall != topList[j].SumSysinstall {
+			return topList[i].SumSysinstall > topList[j].SumSysinstall
+		}
+		if topList[i].Distro != topList[j].Distro {
+			return topList[i].Distro < topList[j].Distro
+		}
+		if topList[i].Country != topList[j].Country {
+			return topList[i].Country < topList[j].Country
+		}
+		if topList[i].Desktop != topList[j].Desktop {
+			return topList[i].Desktop < topList[j].Desktop
+		}
+		if topList[i].Arch != topList[j].Arch {
+			return topList[i].Arch < topList[j].Arch
+		}
+		return topList[i].EggsVersion < topList[j].EggsVersion
+	})
+
+	if len(topList) > 10 {
+		topList = topList[:10]
+	}
+	summary.TopInstallations = topList
+
+	return summary, nil
+}
+
+func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	summary, err := loadCensusSummary(s.dataPath)
+	s.mu.Unlock()
+
+	if err != nil && !os.IsNotExist(err) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to read census data"}`))
+		return
+	}
+
 	respondSummary(w, r, summary)
 }
 
@@ -487,9 +633,90 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
+	writeMarkdownTopInstallations(&buf, s.TopInstallations)
 	writeMarkdownRecentEvents(&buf, s.RecentEvents)
 
 	return buf.String()
+}
+
+func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
+	fmt.Fprintf(buf, "### Top 10 Installations (sysinstall)\n\n")
+
+	countryW := len("Country")
+	distroW := len("Distro")
+	desktopW := len("Desktop")
+	archW := len("Arch")
+	verW := len("Eggs Version")
+	sumW := len("sum_sysinstall")
+
+	if len(list) == 0 {
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
+			countryW, "Country",
+			distroW, "Distro",
+			desktopW, "Desktop",
+			archW, "Arch",
+			verW, "Eggs Version",
+			sumW, "sum_sysinstall")
+		fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
+			strings.Repeat("-", countryW),
+			strings.Repeat("-", distroW),
+			strings.Repeat("-", desktopW),
+			strings.Repeat("-", archW),
+			strings.Repeat("-", verW),
+			strings.Repeat("-", sumW-1))
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n\n",
+			countryW, "(no data)",
+			distroW, "-",
+			desktopW, "-",
+			archW, "-",
+			verW, "-",
+			sumW, 0)
+		return
+	}
+
+	for _, item := range list {
+		if len(item.Country) > countryW {
+			countryW = len(item.Country)
+		}
+		if len(item.Distro) > distroW {
+			distroW = len(item.Distro)
+		}
+		if len(item.Desktop) > desktopW {
+			desktopW = len(item.Desktop)
+		}
+		if len(item.Arch) > archW {
+			archW = len(item.Arch)
+		}
+		if len(item.EggsVersion) > verW {
+			verW = len(item.EggsVersion)
+		}
+	}
+
+	fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
+		countryW, "Country",
+		distroW, "Distro",
+		desktopW, "Desktop",
+		archW, "Arch",
+		verW, "Eggs Version",
+		sumW, "sum_sysinstall")
+	fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
+		strings.Repeat("-", countryW),
+		strings.Repeat("-", distroW),
+		strings.Repeat("-", desktopW),
+		strings.Repeat("-", archW),
+		strings.Repeat("-", verW),
+		strings.Repeat("-", sumW-1))
+
+	for _, item := range list {
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n",
+			countryW, item.Country,
+			distroW, item.Distro,
+			desktopW, item.Desktop,
+			archW, item.Arch,
+			verW, item.EggsVersion,
+			sumW, item.SumSysinstall)
+	}
+	buf.WriteString("\n")
 }
 
 func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
@@ -803,6 +1030,7 @@ th {
 	buf.WriteString(`  </div>
 `)
 
+	writeHTMLTopInstallations(&buf, s.TopInstallations)
 	writeHTMLRecentEvents(&buf, s.RecentEvents)
 
 	buf.WriteString(`</div>
@@ -811,6 +1039,44 @@ th {
 `)
 
 	return buf.String()
+}
+
+func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
+	buf.WriteString(`  <section class="panel" id="top-installations">
+    <h2><a href="#top-installations" class="anchor-link">Top 10 Installations (sysinstall)</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th>Arch</th>
+          <th>Eggs Version</th>
+          <th class="num">sum_sysinstall</th>
+        </tr>
+      </thead>
+      <tbody>
+`)
+	if len(list) == 0 {
+		buf.WriteString(`        <tr><td colspan="6" class="empty">No installations recorded yet</td></tr>
+`)
+	} else {
+		for _, item := range list {
+			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">%d</td></tr>
+`,
+				html.EscapeString(item.Country),
+				html.EscapeString(item.Distro),
+				html.EscapeString(item.Desktop),
+				html.EscapeString(item.Arch),
+				html.EscapeString(item.EggsVersion),
+				item.SumSysinstall,
+			)
+		}
+	}
+	buf.WriteString(`      </tbody>
+    </table>
+  </section>
+`)
 }
 
 func writePrettyJSON(w http.ResponseWriter, v any) {
@@ -828,10 +1094,29 @@ func writePrettyJSON(w http.ResponseWriter, v any) {
 }
 
 func resetCensusData(dataPath string) error {
-	if err := os.Truncate(dataPath, 0); err != nil && !os.IsNotExist(err) {
+	fi, err := os.Stat(dataPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	if fi.IsDir() {
+		entries, err := os.ReadDir(dataPath)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				filePath := filepath.Join(dataPath, e.Name())
+				if err := os.Truncate(filePath, 0); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return os.Truncate(dataPath, 0)
 }
 
 func main() {
@@ -841,9 +1126,11 @@ func main() {
 	}
 
 	addr := flag.String("addr", defaultAddr, "HTTP listen address (env CENSUS_ADDR)")
-	dataPath := flag.String("data", "/var/lib/penguins-census/census.jsonl", "Path to census JSONL file")
+	dataPath := flag.String("data", "/var/lib/penguins-census/census.jsonl", "Path to census JSONL file or directory")
 	mmdbPath := flag.String("mmdb", "/var/lib/penguins-census/dbip-country.mmdb", "Path to GeoIP MMDB file")
 	reset := flag.Bool("reset", false, "Reset (truncate) all census counts and exit")
+	top := flag.Bool("top", false, "Print top 10 unique sysinstall rankings and exit")
+	report := flag.Bool("report", false, "Print full census markdown report to terminal and exit")
 	flag.Parse()
 
 	if *reset {
@@ -851,6 +1138,26 @@ func main() {
 			log.Fatalf("failed to reset census data (%s): %v", *dataPath, err)
 		}
 		fmt.Printf("Census data reset: %s\n", *dataPath)
+		return
+	}
+
+	if *top {
+		summary, err := loadCensusSummary(*dataPath)
+		if err != nil {
+			log.Fatalf("failed to read census data (%s): %v", *dataPath, err)
+		}
+		var buf bytes.Buffer
+		writeMarkdownTopInstallations(&buf, summary.TopInstallations)
+		fmt.Print(buf.String())
+		return
+	}
+
+	if *report {
+		summary, err := loadCensusSummary(*dataPath)
+		if err != nil {
+			log.Fatalf("failed to read census data (%s): %v", *dataPath, err)
+		}
+		fmt.Print(renderTextSummary(summary))
 		return
 	}
 
