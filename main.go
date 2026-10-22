@@ -37,9 +37,8 @@ type SystemInfo struct {
 }
 
 type OptionsInfo struct {
-	Clone       bool   `json:"clone"`
-	Compression string `json:"compression"`
-	Coexist     bool   `json:"coexist"`
+	Clone   bool `json:"clone"`
+	Coexist bool `json:"coexist"`
 }
 
 type CensusRecord struct {
@@ -87,7 +86,6 @@ type CensusSummary struct {
 	ByDesktop        map[string]int    `json:"by_desktop"`
 	ByVirt           map[string]int    `json:"by_virt"`
 	ByInit           map[string]int    `json:"by_init"`
-	ByCompression    map[string]int    `json:"by_compression"`
 	ByCountry        map[string]int    `json:"by_country"`
 	ByVersion        map[string]int    `json:"by_version"`
 }
@@ -329,7 +327,6 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		ByDesktop:        make(map[string]int),
 		ByVirt:           make(map[string]int),
 		ByInit:           make(map[string]int),
-		ByCompression:    make(map[string]int),
 		ByCountry:        make(map[string]int),
 		ByVersion:        make(map[string]int),
 	}
@@ -377,9 +374,6 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 
 		if rec.System.Init != "" {
 			summary.ByInit[rec.System.Init]++
-		}
-		if rec.Options.Compression != "" {
-			summary.ByCompression[rec.Options.Compression]++
 		}
 		if rec.Options.Clone {
 			summary.CloneCount++
@@ -629,7 +623,6 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
 	writeMarkdownTable(&buf, "Virt", "Virt", s.ByVirt, s.TotalEvents)
 	writeMarkdownTable(&buf, "Init", "Init", s.ByInit, s.TotalEvents)
-	writeMarkdownTable(&buf, "Compression", "Compression", s.ByCompression, s.TotalEvents)
 	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
@@ -1023,7 +1016,6 @@ th {
 	writeHTMLTableCard(&buf, "desktop", "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
 	writeHTMLTableCard(&buf, "virtualization", "Virtualization", "Virt", s.ByVirt, s.TotalEvents, "virt")
 	writeHTMLTableCard(&buf, "init-system", "Init System", "Init", s.ByInit, s.TotalEvents, "init")
-	writeHTMLTableCard(&buf, "compression", "Compression", "Compression", s.ByCompression, s.TotalEvents)
 	writeHTMLTableCard(&buf, "arch", "Arch", "Arch", s.ByArch, s.TotalEvents)
 	writeHTMLTableCard(&buf, "version", "Eggs Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
 

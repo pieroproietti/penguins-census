@@ -160,9 +160,6 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.ByInit["systemd"] != 3 {
 		t.Errorf("unexpected by_init: %+v", summary.ByInit)
 	}
-	if summary.ByCompression["zstd"] != 2 || summary.ByCompression["xz"] != 1 {
-		t.Errorf("unexpected by_compression: %+v", summary.ByCompression)
-	}
 	if summary.ByCountry["XX"] != 3 {
 		t.Errorf("unexpected by_country: %+v", summary.ByCountry)
 	}
@@ -275,6 +272,9 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			if strings.Contains(body, "### Action") {
 				t.Errorf("expected text report to not contain Action table, got:\n%s", body)
 			}
+			if strings.Contains(body, "Compression") {
+				t.Errorf("expected text report to not contain Compression table, got:\n%s", body)
+			}
 			// Verify ranking: debian (2) appears before ubuntu (1)
 			idxDebian := strings.Index(body, "debian")
 			idxUbuntu := strings.Index(body, "ubuntu")
@@ -338,19 +338,21 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			if strings.Contains(body, "Coexist") {
 				t.Errorf("expected HTML dashboard to not display Coexist")
 			}
+			if strings.Contains(body, "Compression") {
+				t.Errorf("expected HTML dashboard to not display Compression")
+			}
 
 			if strings.Contains(body, `id="action"`) {
 				t.Errorf("expected HTML dashboard to not display Action table")
 			}
 
-			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, compression, arch, version
+			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, arch, version
 			headers := []string{
 				`id="country"`,
 				`id="distro"`,
 				`id="desktop"`,
 				`id="virtualization"`,
 				`id="init-system"`,
-				`id="compression"`,
 				`id="arch"`,
 				`id="version"`,
 			}

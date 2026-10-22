@@ -47,7 +47,6 @@ You can view the live aggregated statistics directly in your browser or via the 
   },
   "options": {
     "clone": false,
-    "compression": "zstd",
     "coexist": false
   }
 }

@@ -21,8 +21,7 @@ for line in open(input_file):
             "desktop": data.get("system", {}).get("desktop"),
             "virt": data.get("system", {}).get("virt"),
             "init": data.get("system", {}).get("init"),
-            "clone": data.get("options", {}).get("clone"),
-            "compression": data.get("options", {}).get("compression")
+            "clone": data.get("options", {}).get("clone")
         }
         rows.append(flat)
 
