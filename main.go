@@ -996,7 +996,7 @@ th {
   <header>
     <div>
       <h1>Penguins Eggs Worldwide Usage</h1>
-      <div class="subtitle">Since 19 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
+      <div class="subtitle">Since 22 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
     </div>
     <div class="links">
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>

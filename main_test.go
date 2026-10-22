@@ -311,7 +311,7 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			for _, expected := range []string{
 				"<!DOCTYPE html>",
 				"Penguins Eggs Worldwide Usage",
-				"Since 19 October 2026",
+				"Since 22 October 2026",
 				"https://penguins-eggs.net",
 				"https://penguins-eggs.net/access/",
 				"https://github.com/pieroproietti/penguins-eggs",
