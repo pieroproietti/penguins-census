@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -53,6 +55,7 @@ type CensusRecord struct {
 }
 
 type RecentEvent struct {
+	Date       string `json:"date"`
 	Country    string `json:"country"`
 	Distro     string `json:"distro"`
 	Desktop    string `json:"desktop"`
@@ -69,25 +72,44 @@ type TopInstallation struct {
 	SumSysinstall int    `json:"sum_sysinstall"`
 }
 
+type RepoClientStats struct {
+	Hits       int
+	Families   map[string]bool
+	HasIndex   bool
+	HasPackage bool
+}
+
+type RepoAnalysisSummary struct {
+	GeneratedAt   string         `json:"generated_at,omitempty"`
+	TotalLogLines int            `json:"total_log_lines"`
+	ValidHits     int            `json:"valid_hits"`
+	IgnoredBots   int            `json:"ignored_bots"`
+	UniqueIPs     int            `json:"unique_ips"`
+	ByFamily      map[string]int `json:"by_family"`
+	ByCountry     map[string]int `json:"by_country"`
+}
+
 type CensusSummary struct {
-	TotalEvents      int               `json:"total_events"`
-	UniqueMachines   int               `json:"unique_machines"`
-	TotalCountries   int               `json:"total_countries"`
-	TotalDistros     int               `json:"total_distros"`
-	CountryCount     int               `json:"country,omitempty"`
-	DistroCount      int               `json:"distro,omitempty"`
-	CloneCount       int               `json:"clone_count"`
-	CoexistCount     int               `json:"coexist_count"`
-	RecentEvents     []RecentEvent     `json:"recent_events"`
-	TopInstallations []TopInstallation `json:"top_installations"`
-	ByAction         map[string]int    `json:"by_action"`
-	ByDistro         map[string]int    `json:"by_distro"`
-	ByArch           map[string]int    `json:"by_arch"`
-	ByDesktop        map[string]int    `json:"by_desktop"`
-	ByVirt           map[string]int    `json:"by_virt"`
-	ByInit           map[string]int    `json:"by_init"`
-	ByCountry        map[string]int    `json:"by_country"`
-	ByVersion        map[string]int    `json:"by_version"`
+	TotalEvents      int                  `json:"total_events"`
+	UniqueMachines   int                  `json:"unique_machines"`
+	TotalCountries   int                  `json:"total_countries"`
+	TotalDistros     int                  `json:"total_distros"`
+	CountryCount     int                  `json:"country,omitempty"`
+	DistroCount      int                  `json:"distro,omitempty"`
+	RemasterClones   int                  `json:"remaster_clones"`
+	SysinstallClones int                  `json:"sysinstall_clones"`
+	CoexistCount     int                  `json:"coexist_count"`
+	RecentEvents     []RecentEvent        `json:"recent_events"`
+	TopInstallations []TopInstallation    `json:"top_installations"`
+	RepoClients      *RepoAnalysisSummary `json:"repo_clients,omitempty"`
+	ByAction         map[string]int       `json:"by_action"`
+	ByDistro         map[string]int       `json:"by_distro"`
+	ByArch           map[string]int       `json:"by_arch"`
+	ByDesktop        map[string]int       `json:"by_desktop"`
+	ByVirt           map[string]int       `json:"by_virt"`
+	ByInit           map[string]int       `json:"by_init"`
+	ByCountry        map[string]int       `json:"by_country"`
+	ByVersion        map[string]int       `json:"by_version"`
 }
 
 type TableRow struct {
@@ -340,7 +362,7 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			return
 		}
 		lastRecords = append(lastRecords, rec)
-		if len(lastRecords) > 3 {
+		if len(lastRecords) > 10 {
 			lastRecords = lastRecords[1:]
 		}
 		summary.TotalEvents++
@@ -376,7 +398,11 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			summary.ByInit[rec.System.Init]++
 		}
 		if rec.Options.Clone {
-			summary.CloneCount++
+			if rec.Action == "remaster" {
+				summary.RemasterClones++
+			} else if rec.Action == "sysinstall" {
+				summary.SysinstallClones++
+			}
 		}
 		if rec.Options.Coexist {
 			summary.CoexistCount++
@@ -408,6 +434,7 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			desktop = "headless/cli"
 		}
 		summary.RecentEvents = append(summary.RecentEvents, RecentEvent{
+			Date:       formatEventDate(r.Timestamp),
 			Country:    country,
 			Distro:     distro,
 			Desktop:    desktop,
@@ -497,6 +524,14 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		topList = topList[:10]
 	}
 	summary.TopInstallations = topList
+
+	repoStatsPath := filepath.Join(filepath.Dir(dataPath), "repo-clients.json")
+	if fi, err := os.Stat(dataPath); err == nil && fi.IsDir() {
+		repoStatsPath = filepath.Join(dataPath, "repo-clients.json")
+	}
+	if rStats, err := loadRepoAnalysisSummary(repoStatsPath); err == nil {
+		summary.RepoClients = rStats
+	}
 
 	return summary, nil
 }
@@ -612,11 +647,10 @@ func writeMarkdownTable(buf *bytes.Buffer, title, colName string, m map[string]i
 func renderTextSummary(s CensusSummary) string {
 	var buf bytes.Buffer
 	buf.WriteString("# Penguins Eggs Census Report\n\n")
-	fmt.Fprintf(&buf, "- Total Events:    %d\n", s.TotalEvents)
-	fmt.Fprintf(&buf, "- Unique Machines: %d\n", s.UniqueMachines)
-	fmt.Fprintf(&buf, "- Remasters:       %d\n", s.ByAction["remaster"])
-	fmt.Fprintf(&buf, "- Installations:   %d\n", s.ByAction["sysinstall"])
-	fmt.Fprintf(&buf, "- Clone Count:     %d\n\n", s.CloneCount)
+	fmt.Fprintf(&buf, "- Total Events:        %d\n", s.TotalEvents)
+	fmt.Fprintf(&buf, "- Unique Machines:     %d\n", s.UniqueMachines)
+	fmt.Fprintf(&buf, "- Remasters/Clones:    %d/%d\n", s.ByAction["remaster"], s.RemasterClones)
+	fmt.Fprintf(&buf, "- Sysinstalls/Clones:  %d/%d\n\n", s.ByAction["sysinstall"], s.SysinstallClones)
 
 	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeMarkdownTable(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
@@ -629,18 +663,36 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTopInstallations(&buf, s.TopInstallations)
 	writeMarkdownRecentEvents(&buf, s.RecentEvents)
 
+	if s.RepoClients != nil && s.RepoClients.UniqueIPs > 0 {
+		totalOps := s.ByAction["remaster"] + s.ByAction["sysinstall"]
+		writeMarkdownRepoClients(&buf, *s.RepoClients, s.UniqueMachines, totalOps)
+	}
+
 	return buf.String()
 }
 
+func writeMarkdownRepoClients(buf *bytes.Buffer, r RepoAnalysisSummary, censusMachines, completedOps int) {
+	fmt.Fprintf(buf, "### Unique IP last 15 days\n\n")
+	if r.GeneratedAt != "" {
+		fmt.Fprintf(buf, "- Updated:                 %s\n", r.GeneratedAt)
+	}
+	fmt.Fprintf(buf, "- Unique IPs (15 days):    %d\n", r.UniqueIPs)
+	fmt.Fprintf(buf, "- Census Active Machines:  %d\n", censusMachines)
+	fmt.Fprintf(buf, "- Completed Operations:    %d\n\n", completedOps)
+
+	writeMarkdownTable(buf, "Package Managers", "Family", r.ByFamily, r.UniqueIPs)
+	writeMarkdownTable(buf, "Repo Clients by Country", "Country", r.ByCountry, r.UniqueIPs)
+}
+
 func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
-	fmt.Fprintf(buf, "### Top 10 Installations (sysinstall)\n\n")
+	fmt.Fprintf(buf, "### Top 10 Sysinstalls\n\n")
 
 	countryW := len("Country")
 	distroW := len("Distro")
 	desktopW := len("Desktop")
 	archW := len("Arch")
-	verW := len("Eggs Version")
-	sumW := len("sum_sysinstall")
+	verW := len("Version")
+	sumW := len("Sysinstalls")
 
 	if len(list) == 0 {
 		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
@@ -648,8 +700,8 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 			distroW, "Distro",
 			desktopW, "Desktop",
 			archW, "Arch",
-			verW, "Eggs Version",
-			sumW, "sum_sysinstall")
+			verW, "Version",
+			sumW, "Sysinstalls")
 		fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
 			strings.Repeat("-", countryW),
 			strings.Repeat("-", distroW),
@@ -690,8 +742,8 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 		distroW, "Distro",
 		desktopW, "Desktop",
 		archW, "Arch",
-		verW, "Eggs Version",
-		sumW, "sum_sysinstall")
+		verW, "Version",
+		sumW, "Sysinstalls")
 	fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
 		strings.Repeat("-", countryW),
 		strings.Repeat("-", distroW),
@@ -712,12 +764,29 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 	buf.WriteString("\n")
 }
 
+func formatEventDate(ts string) string {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return "-"
+	}
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		return t.Format("2006-01-02 15:04:05")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
+		return t.Format("2006-01-02 15:04:05")
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
+		return t.Format("2006-01-02 15:04:05")
+	}
+	return ts
+}
+
 func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 	fmt.Fprintf(buf, "### Recent Events\n\n")
-	fmt.Fprintf(buf, "| Country | Distro | Desktop | Remaster | Sysinstall |\n")
-	fmt.Fprintf(buf, "|---------|--------|---------|:--------:|:----------:|\n")
+	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Remaster | Sysinstall |\n")
+	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|:--------:|:----------:|\n")
 	if len(events) == 0 {
-		fmt.Fprintf(buf, "| (no data) | - | - | - | - |\n\n")
+		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -        | -          |\n\n")
 		return
 	}
 	for _, ev := range events {
@@ -729,7 +798,11 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 		if ev.Sysinstall {
 			sys = "✓"
 		}
-		fmt.Fprintf(buf, "| %-7s | %-6s | %-7s | %-8s | %-10s |\n", ev.Country, ev.Distro, ev.Desktop, rem, sys)
+		date := ev.Date
+		if date == "" {
+			date = "-"
+		}
+		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-8s | %-10s |\n", date, ev.Country, ev.Distro, ev.Desktop, rem, sys)
 	}
 	buf.WriteString("\n")
 }
@@ -761,6 +834,7 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
     <table>
       <thead>
         <tr>
+          <th>Date</th>
           <th>Country</th>
           <th>Distro</th>
           <th>Desktop</th>
@@ -771,7 +845,7 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
       <tbody>
 `)
 	if len(events) == 0 {
-		buf.WriteString(`        <tr><td colspan="5" class="empty">No events recorded yet</td></tr>
+		buf.WriteString(`        <tr><td colspan="6" class="empty">No events recorded yet</td></tr>
 `)
 	} else {
 		for _, e := range events {
@@ -783,8 +857,12 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 			if e.Sysinstall {
 				sys = `<span class="check">&#10003;</span>`
 			}
-			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
-`, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), rem, sys)
+			date := html.EscapeString(e.Date)
+			if date == "" {
+				date = `<span class="muted">&mdash;</span>`
+			}
+			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
+`, date, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), rem, sys)
 		}
 	}
 	buf.WriteString(`      </tbody>
@@ -995,7 +1073,12 @@ th {
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
       <a class="btn" href="https://penguins-eggs.net/access/" target="_blank" rel="noopener">Site</a>
       <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
-      <a class="btn" href="?format=txt">Plain Text / Markdown</a>
+`)
+	if s.RepoClients != nil && s.RepoClients.UniqueIPs > 0 {
+		buf.WriteString(`      <a class="btn" href="#unique-ips">Unique IPs</a>
+`)
+	}
+	buf.WriteString(`      <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
     </div>
   </header>
@@ -1004,12 +1087,11 @@ th {
 	fmt.Fprintf(&buf, `  <div class="cards" id="overview">
     <div class="card" id="total-events"><div class="card-label">Total Events</div><div class="card-value">%d</div></div>
     <div class="card" id="unique-machines"><div class="card-label">Unique Machines</div><div class="card-value">%d</div></div>
-    <div class="card" id="remasters"><span id="remaster" class="anchor-alias"></span><div class="card-label">Remasters</div><div class="card-value">%d</div></div>
-    <div class="card" id="installations"><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><div class="card-label">Installations</div><div class="card-value">%d</div></div>
-    <div class="card" id="clones"><span id="clone" class="anchor-alias"></span><div class="card-label">Clones</div><div class="card-value">%d</div></div>
+    <div class="card" id="remasters-clones"><span id="remasters" class="anchor-alias"></span><span id="remaster" class="anchor-alias"></span><span id="remaster-clone" class="anchor-alias"></span><div class="card-label">Remasters/Clones</div><div class="card-value">%d/%d</div></div>
+    <div class="card" id="sysinstalls-clones"><span id="sysinstalls" class="anchor-alias"></span><span id="installations" class="anchor-alias"></span><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><span id="sysinstall-clone" class="anchor-alias"></span><span id="clones" class="anchor-alias"></span><span id="clone" class="anchor-alias"></span><div class="card-label">Sysinstalls/Clones</div><div class="card-value">%d/%d</div></div>
   </div>
   <div class="grid">
-`, s.TotalEvents, s.UniqueMachines, s.ByAction["remaster"], s.ByAction["sysinstall"], s.CloneCount)
+`, s.TotalEvents, s.UniqueMachines, s.ByAction["remaster"], s.RemasterClones, s.ByAction["sysinstall"], s.SysinstallClones)
 
 	writeHTMLTableCard(&buf, "country", "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeHTMLTableCard(&buf, "distro", "Distro", "Distro", s.ByDistro, s.TotalEvents)
@@ -1017,13 +1099,18 @@ th {
 	writeHTMLTableCard(&buf, "virtualization", "Virtualization", "Virt", s.ByVirt, s.TotalEvents, "virt")
 	writeHTMLTableCard(&buf, "init-system", "Init System", "Init", s.ByInit, s.TotalEvents, "init")
 	writeHTMLTableCard(&buf, "arch", "Arch", "Arch", s.ByArch, s.TotalEvents)
-	writeHTMLTableCard(&buf, "version", "Eggs Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
+	writeHTMLTableCard(&buf, "version", "Version", "Version", s.ByVersion, s.TotalEvents, "eggs-version")
 
 	buf.WriteString(`  </div>
 `)
 
 	writeHTMLTopInstallations(&buf, s.TopInstallations)
 	writeHTMLRecentEvents(&buf, s.RecentEvents)
+
+	if s.RepoClients != nil && s.RepoClients.UniqueIPs > 0 {
+		totalOps := s.ByAction["remaster"] + s.ByAction["sysinstall"]
+		writeHTMLRepoClients(&buf, *s.RepoClients, s.UniqueMachines, totalOps)
+	}
 
 	buf.WriteString(`</div>
 </body>
@@ -1033,9 +1120,34 @@ th {
 	return buf.String()
 }
 
+func writeHTMLRepoClients(buf *bytes.Buffer, r RepoAnalysisSummary, censusMachines, completedOps int) {
+	fmt.Fprintf(buf, `  <section class="panel" id="unique-ips">
+    <span id="repo-clients" class="anchor-alias"></span>
+    <span id="unique-ips-last-15-days" class="anchor-alias"></span>
+    <h2><a href="#unique-ips" class="anchor-link">Unique IP last 15 days</a></h2>
+    <div class="subtitle" style="margin-bottom: 1rem; color: var(--muted); font-size: 0.85rem;">Estimated from package manager access logs (Debian/APT, Arch/ALPM, RPM/DNF, Alpine/APK) &bull; Updated: %s</div>
+
+    <div class="cards" style="margin-bottom: 1.5rem;">
+      <div class="card"><div class="card-label">Unique IPs (15 days)</div><div class="card-value">%d</div></div>
+      <div class="card"><div class="card-label">Census Active Machines</div><div class="card-value">%d</div></div>
+      <div class="card"><div class="card-label">Completed Operations</div><div class="card-value">%d</div></div>
+    </div>
+
+    <div class="grid">
+`, html.EscapeString(r.GeneratedAt), r.UniqueIPs, censusMachines, completedOps)
+
+	writeHTMLTableCard(buf, "repo-families", "Package Managers", "Family", r.ByFamily, r.UniqueIPs)
+	writeHTMLTableCard(buf, "repo-countries", "Repo Clients by Country", "Country", r.ByCountry, r.UniqueIPs)
+
+	buf.WriteString(`    </div>
+  </section>
+`)
+}
+
 func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
-	buf.WriteString(`  <section class="panel" id="top-installations">
-    <h2><a href="#top-installations" class="anchor-link">Top 10 Installations (sysinstall)</a></h2>
+	buf.WriteString(`  <section class="panel" id="top-sysinstalls">
+    <span id="top-installations" class="anchor-alias"></span>
+    <h2><a href="#top-sysinstalls" class="anchor-link">Top 10 Sysinstalls</a></h2>
     <table>
       <thead>
         <tr>
@@ -1043,14 +1155,14 @@ func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
           <th>Distro</th>
           <th>Desktop</th>
           <th>Arch</th>
-          <th>Eggs Version</th>
-          <th class="num">sum_sysinstall</th>
+          <th>Version</th>
+          <th class="num">Sysinstalls</th>
         </tr>
       </thead>
       <tbody>
 `)
 	if len(list) == 0 {
-		buf.WriteString(`        <tr><td colspan="6" class="empty">No installations recorded yet</td></tr>
+		buf.WriteString(`        <tr><td colspan="6" class="empty">No sysinstalls recorded yet</td></tr>
 `)
 	} else {
 		for _, item := range list {
@@ -1083,6 +1195,333 @@ func writePrettyJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+func parseAccessLogLine(line string) (ip, method, path, status, ua string, ok bool) {
+	sp1 := strings.IndexByte(line, ' ')
+	if sp1 <= 0 {
+		return "", "", "", "", "", false
+	}
+	ip = line[:sp1]
+
+	q1 := strings.IndexByte(line[sp1:], '"')
+	if q1 < 0 {
+		return "", "", "", "", "", false
+	}
+	q1 += sp1
+	q2 := strings.IndexByte(line[q1+1:], '"')
+	if q2 < 0 {
+		return "", "", "", "", "", false
+	}
+	q2 += q1 + 1
+	req := line[q1+1 : q2]
+	parts := strings.Split(req, " ")
+	if len(parts) >= 2 {
+		method = parts[0]
+		path = parts[1]
+	} else {
+		return "", "", "", "", "", false
+	}
+
+	afterReq := line[q2+1:]
+	afterParts := strings.Fields(afterReq)
+	if len(afterParts) >= 1 {
+		status = afterParts[0]
+	}
+
+	lastQ := strings.LastIndexByte(line, '"')
+	if lastQ > 0 {
+		prevQ := strings.LastIndexByte(line[:lastQ], '"')
+		if prevQ >= 0 {
+			ua = line[prevQ+1 : lastQ]
+		}
+	}
+
+	return ip, method, path, status, ua, true
+}
+
+func isCrawlerUserAgent(ua string) bool {
+	l := strings.ToLower(ua)
+	for _, kw := range []string{
+		"bot", "crawler", "spider", "ahrefs", "semrush", "petalbot",
+		"yandex", "bingbot", "googlebot", "bytespider", "baiduspider",
+	} {
+		if strings.Contains(l, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchRepoRequest(path, ua string) (family string, isIndex, isPkg bool, ok bool) {
+	lp := strings.ToLower(path)
+	lua := strings.ToLower(ua)
+
+	// Debian / Ubuntu / Devuan / Mint
+	if strings.Contains(lua, "apt-http") || strings.Contains(lp, "/repos/deb/") || strings.Contains(lp, "/dists/") || strings.Contains(lp, "inrelease") {
+		family = "Debian/APT"
+		if strings.Contains(lp, "inrelease") || strings.Contains(lp, "release") || strings.Contains(lp, "packages") {
+			isIndex = true
+		}
+		if strings.HasSuffix(lp, ".deb") {
+			isPkg = true
+		}
+		return family, isIndex, isPkg, isIndex || isPkg
+	}
+
+	// Arch / Manjaro
+	if strings.Contains(lua, "pacman") || strings.Contains(lua, "libalpm") || strings.Contains(lp, "/repos/arch/") || strings.HasSuffix(lp, ".db") || strings.HasSuffix(lp, ".db.tar.gz") {
+		family = "Arch/ALPM"
+		if strings.HasSuffix(lp, ".db") || strings.HasSuffix(lp, ".db.tar.gz") || strings.HasSuffix(lp, ".files") || strings.HasSuffix(lp, ".files.tar.gz") {
+			isIndex = true
+		}
+		if strings.HasSuffix(lp, ".pkg.tar.zst") || strings.HasSuffix(lp, ".pkg.tar.xz") {
+			isPkg = true
+		}
+		return family, isIndex, isPkg, isIndex || isPkg
+	}
+
+	// RPM (Fedora, openSUSE)
+	if strings.Contains(lua, "dnf") || strings.Contains(lua, "libdnf") || strings.Contains(lua, "yum") || strings.Contains(lua, "zypp") || strings.Contains(lp, "/repos/rpm/") || strings.Contains(lp, "repomd.xml") {
+		family = "RPM/DNF"
+		if strings.Contains(lp, "repomd.xml") || strings.Contains(lp, "primary.xml") || strings.Contains(lp, "filelists.xml") {
+			isIndex = true
+		}
+		if strings.HasSuffix(lp, ".rpm") {
+			isPkg = true
+		}
+		return family, isIndex, isPkg, isIndex || isPkg
+	}
+
+	// Alpine
+	if strings.Contains(lua, "apk-tools") || strings.Contains(lp, "/repos/alpine/") || strings.Contains(lp, "apkindex") {
+		family = "Alpine/APK"
+		if strings.Contains(lp, "apkindex") {
+			isIndex = true
+		}
+		if strings.HasSuffix(lp, ".apk") {
+			isPkg = true
+		}
+		return family, isIndex, isPkg, isIndex || isPkg
+	}
+
+	return "", false, false, false
+}
+
+func lookupIPCountry(db *maxminddb.Reader, ipStr string) string {
+	if db == nil {
+		return "XX"
+	}
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	if ip == nil {
+		return "XX"
+	}
+	var record struct {
+		Country struct {
+			ISOCode string `maxminddb:"iso_code"`
+		} `maxminddb:"country"`
+	}
+	if err := db.Lookup(ip, &record); err != nil || record.Country.ISOCode == "" {
+		return "XX"
+	}
+	return record.Country.ISOCode
+}
+
+func renderRepoAnalysisReport(repoSummary RepoAnalysisSummary, censusSummary *CensusSummary) string {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "# Stima Macchine Reali Penguins-Eggs (Repository vs Telemetria)\n\n")
+
+	fmt.Fprintf(&buf, "## 🎯 I Tre Livelli di Misurazione\n\n")
+	fmt.Fprintf(&buf, "| Livello di Misurazione | Metrica / Significato | Conteggio Rilevato |\n")
+	fmt.Fprintf(&buf, "|:---|:---|:---:|\n")
+	fmt.Fprintf(&buf, "| **1. Client Repository Osservati** | IP unici de-duplicati che interrogano i repo (APT, ALPM, DNF, APK) | **%d** |\n", repoSummary.UniqueIPs)
+
+	if censusSummary != nil {
+		fmt.Fprintf(&buf, "| **2. Macchine Censite da Eggs** | UUID unici hardware (`/etc/machine-id`) con eggs eseguito | **%d** |\n", censusSummary.UniqueMachines)
+		totalOps := censusSummary.ByAction["remaster"] + censusSummary.ByAction["sysinstall"]
+		fmt.Fprintf(&buf, "| **3. Operazioni Riuscite** | Totale rimasterizzazioni (`remaster`) e installazioni (`sysinstall`) | **%d** (R:%d, S:%d) |\n\n",
+			totalOps, censusSummary.ByAction["remaster"], censusSummary.ByAction["sysinstall"])
+	} else {
+		fmt.Fprintf(&buf, "| **2. Macchine Censite da Eggs** | UUID unici hardware (`/etc/machine-id`) | *(nessun dato censimento)* |\n")
+		fmt.Fprintf(&buf, "| **3. Operazioni Riuscite** | Remaster e Sysinstall completati | *(nessun dato censimento)* |\n\n")
+	}
+
+	fmt.Fprintf(&buf, "- **Righe totali di log analizzate:** %d\n", repoSummary.TotalLogLines)
+	fmt.Fprintf(&buf, "- **Richieste repository valide (200/304):** %d\n", repoSummary.ValidHits)
+	fmt.Fprintf(&buf, "- **Richieste bot/crawler scartate:** %d\n\n", repoSummary.IgnoredBots)
+
+	writeMarkdownTable(&buf, "Famiglie Repository", "Famiglia", repoSummary.ByFamily, repoSummary.UniqueIPs)
+	writeMarkdownTable(&buf, "Distribuzione Geografica Client Repository (\"e da dove?\")", "Country", repoSummary.ByCountry, repoSummary.UniqueIPs)
+
+	return buf.String()
+}
+
+func processAccessLogReaders(readers []io.Reader, db *maxminddb.Reader) RepoAnalysisSummary {
+	merged := RepoAnalysisSummary{
+		ByFamily:  make(map[string]int),
+		ByCountry: make(map[string]int),
+	}
+	clients := make(map[string]*RepoClientStats)
+
+	for _, reader := range readers {
+		scanner := bufio.NewScanner(reader)
+		buf := make([]byte, 64*1024)
+		scanner.Buffer(buf, 256*1024)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			merged.TotalLogLines++
+
+			ip, _, path, status, ua, ok := parseAccessLogLine(line)
+			if !ok {
+				continue
+			}
+
+			if isCrawlerUserAgent(ua) {
+				merged.IgnoredBots++
+				continue
+			}
+
+			if status != "200" && status != "304" && status != "206" {
+				continue
+			}
+
+			family, isIndex, isPkg, isRepo := matchRepoRequest(path, ua)
+			if !isRepo {
+				continue
+			}
+
+			merged.ValidHits++
+			client, exists := clients[ip]
+			if !exists {
+				client = &RepoClientStats{
+					Families: make(map[string]bool),
+				}
+				clients[ip] = client
+			}
+			client.Hits++
+			client.Families[family] = true
+			if isIndex {
+				client.HasIndex = true
+			}
+			if isPkg {
+				client.HasPackage = true
+			}
+		}
+	}
+
+	merged.UniqueIPs = len(clients)
+	for ip, cl := range clients {
+		for f := range cl.Families {
+			merged.ByFamily[f]++
+		}
+		c := lookupIPCountry(db, ip)
+		merged.ByCountry[c]++
+	}
+
+	return merged
+}
+
+func processAccessLogStream(r io.Reader, db *maxminddb.Reader) RepoAnalysisSummary {
+	return processAccessLogReaders([]io.Reader{r}, db)
+}
+
+func saveRepoAnalysisSummary(path string, summary RepoAnalysisSummary) error {
+	if summary.GeneratedAt == "" {
+		summary.GeneratedAt = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+	}
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			return err
+		}
+	}
+	tmpFile := fmt.Sprintf("%s.tmp.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, path)
+}
+
+func loadRepoAnalysisSummary(path string) (*RepoAnalysisSummary, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var res RepoAnalysisSummary
+	if err := json.Unmarshal(data, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func runAnalyzeAccessLogs(paths []string, mmdbPath, dataPath, savePath string) error {
+	var db *maxminddb.Reader
+	if mmdbPath != "" {
+		var err error
+		db, err = maxminddb.Open(mmdbPath)
+		if err == nil {
+			defer db.Close()
+		}
+	}
+
+	var readers []io.Reader
+	var closers []io.Closer
+
+	defer func() {
+		for _, c := range closers {
+			_ = c.Close()
+		}
+	}()
+
+	if len(paths) == 0 || (len(paths) == 1 && paths[0] == "-") {
+		readers = append(readers, os.Stdin)
+	} else {
+		for _, p := range paths {
+			f, err := os.Open(p)
+			if err != nil {
+				log.Printf("warning: skipping %s: %v", p, err)
+				continue
+			}
+			closers = append(closers, f)
+			if strings.HasSuffix(p, ".gz") {
+				gzReader, err := gzip.NewReader(f)
+				if err != nil {
+					log.Printf("warning: skipping gzip file %s: %v", p, err)
+					continue
+				}
+				closers = append(closers, gzReader)
+				readers = append(readers, gzReader)
+			} else {
+				readers = append(readers, f)
+			}
+		}
+	}
+
+	merged := processAccessLogReaders(readers, db)
+	merged.GeneratedAt = time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+
+	if savePath != "" {
+		if err := saveRepoAnalysisSummary(savePath, merged); err != nil {
+			log.Printf("warning: failed to save repo analysis to %s: %v", savePath, err)
+		} else {
+			log.Printf("Repository analysis saved to: %s", savePath)
+		}
+	}
+
+	var census *CensusSummary
+	if dataPath != "" {
+		if c, err := loadCensusSummary(dataPath); err == nil {
+			census = &c
+		}
+	}
+
+	fmt.Print(renderRepoAnalysisReport(merged, census))
+	return nil
 }
 
 func resetCensusData(dataPath string) error {
@@ -1123,7 +1562,25 @@ func main() {
 	reset := flag.Bool("reset", false, "Reset (truncate) all census counts and exit")
 	top := flag.Bool("top", false, "Print top 10 unique sysinstall rankings and exit")
 	report := flag.Bool("report", false, "Print full census markdown report to terminal and exit")
+	analyzeAccess := flag.String("analyze-access", "", "Path to Apache access log (or '-' for stdin) to estimate active repo machines and exit")
+	saveFlag := flag.Bool("save", false, "When used with -analyze-access, save results to repo-clients.json in census data directory")
+	outPath := flag.String("out", "", "Custom path to save repo analysis JSON")
 	flag.Parse()
+
+	if *analyzeAccess != "" {
+		paths := append([]string{*analyzeAccess}, flag.Args()...)
+		savePath := *outPath
+		if savePath == "" && *saveFlag {
+			savePath = filepath.Join(filepath.Dir(*dataPath), "repo-clients.json")
+			if fi, err := os.Stat(*dataPath); err == nil && fi.IsDir() {
+				savePath = filepath.Join(*dataPath, "repo-clients.json")
+			}
+		}
+		if err := runAnalyzeAccessLogs(paths, *mmdbPath, *dataPath, savePath); err != nil {
+			log.Fatalf("failed to analyze access logs: %v", err)
+		}
+		return
+	}
 
 	if *reset {
 		if err := resetCensusData(*dataPath); err != nil {

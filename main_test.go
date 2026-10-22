@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCensusPostAndGet(t *testing.T) {
@@ -136,8 +138,11 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.UniqueMachines != 2 {
 		t.Errorf("expected unique_machines=2, got %d", summary.UniqueMachines)
 	}
-	if summary.CloneCount != 1 {
-		t.Errorf("expected clone_count=1, got %d", summary.CloneCount)
+	if summary.RemasterClones != 1 {
+		t.Errorf("expected remaster_clones=1, got %d", summary.RemasterClones)
+	}
+	if summary.SysinstallClones != 0 {
+		t.Errorf("expected sysinstall_clones=0, got %d", summary.SysinstallClones)
 	}
 	if summary.CoexistCount != 1 {
 		t.Errorf("expected coexist_count=1, got %d", summary.CoexistCount)
@@ -170,6 +175,13 @@ func TestCensusPostAndGet(t *testing.T) {
 	// 5. Verify recent events (last 3, newest first)
 	if len(summary.RecentEvents) != 3 {
 		t.Fatalf("expected 3 recent events, got %d", len(summary.RecentEvents))
+	}
+	// Verify date format (YYYY-MM-DD HH:MM:SS)
+	if summary.RecentEvents[0].Date == "" {
+		t.Errorf("expected non-empty date in recent_events[0]")
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", summary.RecentEvents[0].Date); err != nil {
+		t.Errorf("expected date in 'YYYY-MM-DD HH:MM:SS' format, got %q: %v", summary.RecentEvents[0].Date, err)
 	}
 	// Most recent (event 3): arch, gnome, remaster
 	if summary.RecentEvents[0].Country != "XX" || summary.RecentEvents[0].Distro != "arch" ||
@@ -251,10 +263,10 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			}
 			body := wTxt.Body.String()
 			for _, expected := range []string{
-				"Total Events:    3",
-				"Unique Machines: 3",
-				"Remasters:       2",
-				"Installations:   1",
+				"Total Events:        3",
+				"Unique Machines:     3",
+				"Remasters/Clones:    2/1",
+				"Sysinstalls/Clones:  1/0",
 				"### Distro",
 				"### Arch",
 				"### Desktop",
@@ -321,8 +333,9 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Total Events",
 				"Unique Machines",
 				"Remasters",
-				"Installations",
-				"Clones",
+				"Sysinstalls",
+				"Remasters/Clones",
+				"Sysinstalls/Clones",
 				"Recent Events",
 				"id=\"recent-events\"",
 				"headless/cli",
@@ -525,18 +538,17 @@ func TestResetCensusData(t *testing.T) {
 	}
 }
 
-func TestRecentEventsLimitAndOrder(t *testing.T) {
+func TestClonesByAction(t *testing.T) {
 	tmpDir := t.TempDir()
 	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
 	defer srv.Close()
 
-	// Post 5 events in sequence
 	events := []string{
-		`{"uuid":"u1","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"desktop":"xfce"}}`,
-		`{"uuid":"u2","eggs_version":"10.0","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"desktop":"gnome"}}`,
-		`{"uuid":"u3","eggs_version":"10.0","action":"remaster","distro":{"id":"arch"},"system":{"desktop":"kde"}}`,
-		`{"uuid":"u4","eggs_version":"10.0","action":"sysinstall","distro":{"id":"fedora"},"system":{"desktop":"cinnamon"}}`,
-		`{"uuid":"u5","eggs_version":"10.0","action":"remaster","distro":{"id":"manjaro"},"system":{"desktop":"mate"}}`,
+		`{"uuid":"u1","action":"remaster","options":{"clone":true}}`,
+		`{"uuid":"u2","action":"remaster","options":{"clone":false}}`,
+		`{"uuid":"u3","action":"sysinstall","options":{"clone":true}}`,
+		`{"uuid":"u4","action":"sysinstall","options":{"clone":true}}`,
+		`{"uuid":"u5","action":"sysinstall","options":{"clone":false}}`,
 	}
 	for _, ev := range events {
 		req := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(ev))
@@ -547,7 +559,76 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 		}
 	}
 
-	// Verify JSON format has exactly 3 recent events: u5, u4, u3
+	// 1. JSON
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("GET failed: %d", wGet.Code)
+	}
+	var sum CensusSummary
+	if err := json.Unmarshal(wGet.Body.Bytes(), &sum); err != nil {
+		t.Fatalf("JSON decode error: %v", err)
+	}
+	if sum.RemasterClones != 1 {
+		t.Errorf("expected remaster_clones=1, got %d", sum.RemasterClones)
+	}
+	if sum.SysinstallClones != 2 {
+		t.Errorf("expected sysinstall_clones=2, got %d", sum.SysinstallClones)
+	}
+
+	// 2. TXT
+	reqTxt := httptest.NewRequest(http.MethodGet, "/api/census?format=txt", nil)
+	wTxt := httptest.NewRecorder()
+	srv.ServeHTTP(wTxt, reqTxt)
+	txt := wTxt.Body.String()
+	if !strings.Contains(txt, "- Remasters/Clones:    2/1") {
+		t.Errorf("expected TXT to contain '- Remasters/Clones:    2/1', got:\n%s", txt)
+	}
+	if !strings.Contains(txt, "- Sysinstalls/Clones:  3/2") {
+		t.Errorf("expected TXT to contain '- Sysinstalls/Clones:  3/2', got:\n%s", txt)
+	}
+
+	// 3. HTML
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	html := wHTML.Body.String()
+	if !strings.Contains(html, "Remasters/Clones") || !strings.Contains(html, "Sysinstalls/Clones") {
+		t.Errorf("expected HTML to contain both clone cards")
+	}
+	if !strings.Contains(html, "2/1") || !strings.Contains(html, "3/2") {
+		t.Errorf("expected HTML to contain '2/1' and '3/2'")
+	}
+}
+
+func TestRecentEventsLimitAndOrder(t *testing.T) {
+	tmpDir := t.TempDir()
+	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
+	defer srv.Close()
+
+	// Post 12 events in sequence to test limit of 10
+	distros := []string{
+		"debian", "ubuntu", "arch", "fedora", "manjaro",
+		"opensuse", "void", "alpine", "gentoo", "kali",
+		"mint", "popos",
+	}
+	for i, d := range distros {
+		action := "remaster"
+		if i%2 == 1 {
+			action = "sysinstall"
+		}
+		ev := fmt.Sprintf(`{"uuid":"u%d","eggs_version":"10.0","action":%q,"distro":{"id":%q},"system":{"desktop":"desktop%d"}}`,
+			i+1, action, d, i+1)
+		req := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(ev))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST failed: %d", w.Code)
+		}
+	}
+
+	// Verify JSON format has exactly 10 recent events: popos down to arch
 	reqGet := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
 	wGet := httptest.NewRecorder()
 	srv.ServeHTTP(wGet, reqGet)
@@ -559,48 +640,70 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 	if err := json.Unmarshal(wGet.Body.Bytes(), &sum); err != nil {
 		t.Fatalf("JSON decode error: %v", err)
 	}
-	if sum.TotalEvents != 5 {
-		t.Fatalf("expected 5 total events, got %d", sum.TotalEvents)
+	if sum.TotalEvents != 12 {
+		t.Fatalf("expected 12 total events, got %d", sum.TotalEvents)
 	}
-	if len(sum.RecentEvents) != 3 {
-		t.Fatalf("expected 3 recent events, got %d", len(sum.RecentEvents))
-	}
-
-	// 1st recent event should be manjaro (from event 5)
-	if sum.RecentEvents[0].Distro != "manjaro" || sum.RecentEvents[0].Desktop != "mate" ||
-		!sum.RecentEvents[0].Remaster || sum.RecentEvents[0].Sysinstall {
-		t.Errorf("expected 1st recent event to be manjaro/remaster, got %+v", sum.RecentEvents[0])
+	if len(sum.RecentEvents) != 10 {
+		t.Fatalf("expected 10 recent events, got %d", len(sum.RecentEvents))
 	}
 
-	// 2nd recent event should be fedora (from event 4)
-	if sum.RecentEvents[1].Distro != "fedora" || sum.RecentEvents[1].Desktop != "cinnamon" ||
-		sum.RecentEvents[1].Remaster || !sum.RecentEvents[1].Sysinstall {
-		t.Errorf("expected 2nd recent event to be fedora/sysinstall, got %+v", sum.RecentEvents[1])
+	// 1st recent event should be popos (from 12th event)
+	if sum.RecentEvents[0].Distro != "popos" || sum.RecentEvents[0].Desktop != "desktop12" ||
+		sum.RecentEvents[0].Remaster || !sum.RecentEvents[0].Sysinstall {
+		t.Errorf("expected 1st recent event to be popos/sysinstall, got %+v", sum.RecentEvents[0])
+	}
+	// Verify date format
+	if sum.RecentEvents[0].Date == "" {
+		t.Errorf("expected non-empty date in recent_events[0]")
+	}
+	if _, err := time.Parse("2006-01-02 15:04:05", sum.RecentEvents[0].Date); err != nil {
+		t.Errorf("expected date formatted as 'YYYY-MM-DD HH:MM:SS', got %q", sum.RecentEvents[0].Date)
 	}
 
-	// 3rd recent event should be arch (from event 3)
-	if sum.RecentEvents[2].Distro != "arch" || sum.RecentEvents[2].Desktop != "kde" ||
-		!sum.RecentEvents[2].Remaster || sum.RecentEvents[2].Sysinstall {
-		t.Errorf("expected 3rd recent event to be arch/remaster, got %+v", sum.RecentEvents[2])
+	// 2nd recent event should be mint (from 11th event)
+	if sum.RecentEvents[1].Distro != "mint" || sum.RecentEvents[1].Desktop != "desktop11" ||
+		!sum.RecentEvents[1].Remaster || sum.RecentEvents[1].Sysinstall {
+		t.Errorf("expected 2nd recent event to be mint/remaster, got %+v", sum.RecentEvents[1])
 	}
 
-	// Verify HTML contains the recent events table with rows
+	// 10th recent event should be arch (from 3rd event)
+	if sum.RecentEvents[9].Distro != "arch" || sum.RecentEvents[9].Desktop != "desktop3" ||
+		!sum.RecentEvents[9].Remaster || sum.RecentEvents[9].Sysinstall {
+		t.Errorf("expected 10th recent event to be arch/remaster, got %+v", sum.RecentEvents[9])
+	}
+
+	// Verify HTML contains the recent events table with headers and rows
 	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
 	wHTML := httptest.NewRecorder()
 	srv.ServeHTTP(wHTML, reqHTML)
 	htmlBody := wHTML.Body.String()
 	for _, expected := range []string{
 		"Recent Events",
-		"manjaro",
-		"fedora",
-		"arch",
-		"mate",
-		"cinnamon",
-		"kde",
+		"<th>Date</th>",
+		"popos",
+		"mint",
+		"kali",
+		"desktop12",
 		"&#10003;", // checkmark for remaster/sysinstall
 	} {
 		if !strings.Contains(htmlBody, expected) {
 			t.Errorf("expected HTML to contain %q", expected)
+		}
+	}
+
+	// Verify text / markdown output contains Date header
+	reqTxt := httptest.NewRequest(http.MethodGet, "/api/census?format=txt", nil)
+	wTxt := httptest.NewRecorder()
+	srv.ServeHTTP(wTxt, reqTxt)
+	txtBody := wTxt.Body.String()
+	for _, expected := range []string{
+		"### Recent Events",
+		"| Date                | Country | Distro | Desktop | Remaster | Sysinstall |",
+		"popos",
+		"mint",
+	} {
+		if !strings.Contains(txtBody, expected) {
+			t.Errorf("expected Text to contain %q", expected)
 		}
 	}
 }
@@ -666,13 +769,13 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 	txtBody := wTxt.Body.String()
 
 	for _, col := range []string{
-		"### Top 10 Installations (sysinstall)",
+		"### Top 10 Sysinstalls",
 		"Country",
 		"Distro",
 		"Desktop",
 		"Arch",
-		"Eggs Version",
-		"sum_sysinstall",
+		"Version",
+		"Sysinstalls",
 		"openkylin",
 		"debian",
 		"ubuntu",
@@ -683,11 +786,11 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 		}
 	}
 
-	// Verify Top 10 Installations appears before Recent Events, with Recent Events at the very end
-	idxTop := strings.Index(txtBody, "### Top 10 Installations (sysinstall)")
+	// Verify Top 10 Sysinstalls appears before Recent Events, with Recent Events at the very end
+	idxTop := strings.Index(txtBody, "### Top 10 Sysinstalls")
 	idxRecent := strings.Index(txtBody, "### Recent Events")
 	if idxRecent == -1 || idxTop == -1 || idxRecent <= idxTop {
-		t.Errorf("expected Top 10 Installations to appear before Recent Events (Recent Events in finale) in text summary")
+		t.Errorf("expected Top 10 Sysinstalls to appear before Recent Events (Recent Events in finale) in text summary")
 	}
 
 	// 3. Verify HTML output
@@ -696,14 +799,17 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 	srv.ServeHTTP(wHTML, reqHTML)
 	htmlBody := wHTML.Body.String()
 
-	idxHTMLTop := strings.Index(htmlBody, `id="top-installations"`)
+	idxHTMLTop := strings.Index(htmlBody, `id="top-sysinstalls"`)
 	idxHTMLRecent := strings.Index(htmlBody, `id="recent-events"`)
 	if idxHTMLTop == -1 || idxHTMLRecent == -1 || idxHTMLRecent <= idxHTMLTop {
-		t.Errorf("expected top-installations panel to appear before recent-events panel in HTML")
+		t.Errorf("expected top-sysinstalls panel to appear before recent-events panel in HTML")
 	}
 
-	if !strings.Contains(htmlBody, `id="top-installations"`) {
-		t.Errorf("expected HTML to contain id=\"top-installations\"")
+	if !strings.Contains(htmlBody, `id="top-sysinstalls"`) {
+		t.Errorf("expected HTML to contain id=\"top-sysinstalls\"")
+	}
+	if !strings.Contains(htmlBody, "Top 10 Sysinstalls") {
+		t.Errorf("expected HTML to contain Top 10 Sysinstalls")
 	}
 	if !strings.Contains(htmlBody, "openkylin") {
 		t.Errorf("expected HTML to contain openkylin")
@@ -739,5 +845,164 @@ func TestTopInstallationsFromDirectory(t *testing.T) {
 	}
 	if summary.TopInstallations[0].SumSysinstall != 2 {
 		t.Fatalf("expected sum_sysinstall=2, got %d", summary.TopInstallations[0].SumSysinstall)
+	}
+}
+
+func TestAnalyzeAccessLogs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Sample Apache combined access log
+	sampleLog := strings.Join([]string{
+		// 1. Valid Debian client (IP 198.51.100.10) checking InRelease and Packages
+		`198.51.100.10 - - [18/Oct/2026:06:25:31 +0200] "GET /repos/deb/dists/bookworm/InRelease HTTP/1.1" 200 4567 "-" "Debian APT-HTTP/1.3 (2.6.1)"`,
+		`198.51.100.10 - - [18/Oct/2026:06:25:32 +0200] "GET /repos/deb/dists/bookworm/main/binary-amd64/Packages.xz HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (2.6.1)"`,
+		// Repeat request next day from same IP: must deduplicate to 1 client
+		`198.51.100.10 - - [19/Oct/2026:08:12:00 +0200] "GET /repos/deb/dists/bookworm/InRelease HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (2.6.1)"`,
+
+		// 2. Valid Arch client (IP 198.51.100.20) querying pacman db
+		`198.51.100.20 - - [18/Oct/2026:07:00:00 +0200] "GET /repos/arch/os/x86_64/eggs.db HTTP/1.1" 200 12340 "-" "pacman/6.0.2 (Linux x86_64) libalpm/13.0.2"`,
+
+		// 3. Valid RPM client (IP 198.51.100.30) querying dnf repomd.xml
+		`198.51.100.30 - - [18/Oct/2026:08:00:00 +0200] "GET /repos/rpm/repodata/repomd.xml HTTP/1.1" 200 3456 "-" "dnf/4.14.0"`,
+
+		// 4. Valid Alpine client (IP 198.51.100.40) querying APKINDEX
+		`198.51.100.40 - - [18/Oct/2026:09:00:00 +0200] "GET /repos/alpine/v3.20/main/x86_64/APKINDEX.tar.gz HTTP/1.1" 200 890 "-" "apk-tools/2.14.4"`,
+
+		// 5. Crawler / Bot accessing an index (must be ignored)
+		`198.51.100.99 - - [18/Oct/2026:10:00:00 +0200] "GET /repos/deb/dists/bookworm/InRelease HTTP/1.1" 200 4567 "-" "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"`,
+
+		// 6. Generic HTML page view (not repo)
+		`198.51.100.88 - - [18/Oct/2026:11:00:00 +0200] "GET /blog/ HTTP/1.1" 200 12000 "-" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"`,
+
+		// 7. 404 error (failed request)
+		`198.51.100.77 - - [18/Oct/2026:12:00:00 +0200] "GET /repos/deb/dists/nonexistent/InRelease HTTP/1.1" 404 123 "-" "Debian APT-HTTP/1.3"`,
+	}, "\n") + "\n"
+
+	logFile := filepath.Join(tmpDir, "access.log")
+	if err := os.WriteFile(logFile, []byte(sampleLog), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	summary := processAccessLogStream(f, nil)
+
+	// Verify deduplicated IP count: exactly 4 clients (10, 20, 30, 40)
+	if summary.UniqueIPs != 4 {
+		t.Errorf("expected 4 unique repo client IPs, got %d", summary.UniqueIPs)
+	}
+	// Verify families
+	if summary.ByFamily["Debian/APT"] != 1 {
+		t.Errorf("expected 1 Debian/APT client, got %d", summary.ByFamily["Debian/APT"])
+	}
+	if summary.ByFamily["Arch/ALPM"] != 1 {
+		t.Errorf("expected 1 Arch/ALPM client, got %d", summary.ByFamily["Arch/ALPM"])
+	}
+	if summary.ByFamily["RPM/DNF"] != 1 {
+		t.Errorf("expected 1 RPM/DNF client, got %d", summary.ByFamily["RPM/DNF"])
+	}
+	if summary.ByFamily["Alpine/APK"] != 1 {
+		t.Errorf("expected 1 Alpine/APK client, got %d", summary.ByFamily["Alpine/APK"])
+	}
+
+	// Verify bots ignored
+	if summary.IgnoredBots != 1 {
+		t.Errorf("expected 1 ignored bot, got %d", summary.IgnoredBots)
+	}
+
+	// Verify report generation
+	census := &CensusSummary{
+		UniqueMachines: 3,
+		ByAction: map[string]int{
+			"remaster":   5,
+			"sysinstall": 2,
+		},
+	}
+	rep := renderRepoAnalysisReport(summary, census)
+	for _, expected := range []string{
+		"Stima Macchine Reali Penguins-Eggs",
+		"Client Repository Osservati",
+		"Macchine Censite da Eggs",
+		"Operazioni Riuscite",
+		"Debian/APT",
+		"Arch/ALPM",
+		"RPM/DNF",
+		"Alpine/APK",
+	} {
+		if !strings.Contains(rep, expected) {
+			t.Errorf("expected report to contain %q", expected)
+		}
+	}
+
+	// Test saving and automatic append to census dashboard
+	repoJSONPath := filepath.Join(tmpDir, "repo-clients.json")
+	if err := saveRepoAnalysisSummary(repoJSONPath, summary); err != nil {
+		t.Fatalf("saveRepoAnalysisSummary failed: %v", err)
+	}
+
+	censusDataFile := filepath.Join(tmpDir, "census.jsonl")
+	_ = os.WriteFile(censusDataFile, []byte(`{"uuid":"m1","action":"remaster"}`+"\n"), 0644)
+
+	sumLoaded, err := loadCensusSummary(censusDataFile)
+	if err != nil {
+		t.Fatalf("loadCensusSummary failed: %v", err)
+	}
+	if sumLoaded.RepoClients == nil {
+		t.Fatalf("expected RepoClients to be loaded from repo-clients.json")
+	}
+	if sumLoaded.RepoClients.UniqueIPs != 4 {
+		t.Errorf("expected 4 unique IPs in loaded RepoClients, got %d", sumLoaded.RepoClients.UniqueIPs)
+	}
+
+	// Verify HTML dashboard includes the appended unique-ips panel and button at the end
+	htmlRep := renderHTMLSummary(sumLoaded)
+	for _, expected := range []string{
+		`id="unique-ips"`,
+		`id="repo-clients"`,
+		`href="#unique-ips"`,
+		"Unique IP last 15 days",
+		"Unique IPs (15 days)",
+		"Package Managers",
+		"Repo Clients by Country",
+		"Debian/APT",
+	} {
+		if !strings.Contains(htmlRep, expected) {
+			t.Errorf("expected HTML dashboard to contain %q", expected)
+		}
+	}
+
+	// Verify order: Unique IP last 15 days is placed after Recent Events and Top Sysinstalls
+	topIdx := strings.Index(htmlRep, `id="top-sysinstalls"`)
+	recentIdx := strings.Index(htmlRep, `id="recent-events"`)
+	uniqueIPIdx := strings.Index(htmlRep, `id="unique-ips"`)
+	if topIdx == -1 || recentIdx == -1 || uniqueIPIdx == -1 {
+		t.Fatalf("expected top-sysinstalls, recent-events, and unique-ips panels in HTML")
+	}
+	if !(recentIdx > topIdx && uniqueIPIdx > recentIdx) {
+		t.Errorf("expected order: top-sysinstalls < recent-events < unique-ips, got %d, %d, %d", topIdx, recentIdx, uniqueIPIdx)
+	}
+
+	// Verify Text summary includes the appended repo-clients section at the end
+	txtRep := renderTextSummary(sumLoaded)
+	for _, expected := range []string{
+		"### Unique IP last 15 days",
+		"- Unique IPs (15 days):    4",
+		"Package Managers",
+		"Repo Clients by Country",
+		"Debian/APT",
+	} {
+		if !strings.Contains(txtRep, expected) {
+			t.Errorf("expected Text summary to contain %q", expected)
+		}
+	}
+	txtTopIdx := strings.Index(txtRep, "### Top 10 Sysinstalls")
+	txtRecentIdx := strings.Index(txtRep, "### Recent Events")
+	txtUniqueIPIdx := strings.Index(txtRep, "### Unique IP last 15 days")
+	if !(txtRecentIdx > txtTopIdx && txtUniqueIPIdx > txtRecentIdx) {
+		t.Errorf("expected text order: Top Sysinstalls < Recent Events < Unique IP last 15 days, got %d, %d, %d", txtTopIdx, txtRecentIdx, txtUniqueIPIdx)
 	}
 }
