@@ -19,6 +19,7 @@ for line in open(input_file):
             "distro_release": data.get("distro", {}).get("release"),
             "arch": data.get("system", {}).get("arch"),
             "desktop": data.get("system", {}).get("desktop"),
+            "display_server": data.get("system", {}).get("display_server"),
             "virt": data.get("system", {}).get("virt"),
             "init": data.get("system", {}).get("init"),
             "clone": data.get("options", {}).get("clone")

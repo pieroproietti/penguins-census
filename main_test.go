@@ -43,7 +43,7 @@ func TestCensusPostAndGet(t *testing.T) {
 		"eggs_version": "10.0.50",
 		"action": "remaster",
 		"distro": { "id": "debian", "like": "debian", "codename": "bookworm", "release": "12" },
-		"system": { "arch": "amd64", "desktop": "xfce", "virt": "kvm", "init": "systemd" },
+		"system": { "arch": "amd64", "desktop": "xfce", "display_server": "x11", "virt": "kvm", "init": "systemd" },
 		"options": { "clone": true, "compression": "zstd", "coexist": false }
 	}`
 	reqPost1 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(payload1))
@@ -65,7 +65,7 @@ func TestCensusPostAndGet(t *testing.T) {
 		"eggs_version": "10.0.50",
 		"action": "sysinstall",
 		"distro": { "id": "debian", "like": "debian", "codename": "bookworm", "release": "12" },
-		"system": { "arch": "amd64", "desktop": "xfce", "virt": "none", "init": "systemd" },
+		"system": { "arch": "amd64", "desktop": "xfce", "display_server": "x11", "virt": "none", "init": "systemd" },
 		"options": { "clone": false, "compression": "xz", "coexist": true }
 	}`
 	reqPost2 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(payload2))
@@ -81,7 +81,7 @@ func TestCensusPostAndGet(t *testing.T) {
 		"eggs_version": "10.1.0",
 		"action": "remaster",
 		"distro": { "id": "arch", "like": "arch", "codename": "rolling", "release": "rolling" },
-		"system": { "arch": "arm64", "desktop": "gnome", "virt": "none", "init": "systemd" },
+		"system": { "arch": "arm64", "desktop": "gnome", "display_server": "wayland", "virt": "none", "init": "systemd" },
 		"options": { "clone": false, "compression": "zstd", "coexist": false }
 	}`
 	reqPost3 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(payload3))
@@ -159,7 +159,10 @@ func TestCensusPostAndGet(t *testing.T) {
 	if summary.ByDesktop["xfce"] != 2 || summary.ByDesktop["gnome"] != 1 {
 		t.Errorf("unexpected by_desktop: %+v", summary.ByDesktop)
 	}
-	if summary.ByVirt["none"] != 2 || summary.ByVirt["kvm"] != 1 {
+	if summary.ByDisplayServer["x11"] != 2 || summary.ByDisplayServer["wayland"] != 1 {
+		t.Errorf("unexpected by_display_server: %+v", summary.ByDisplayServer)
+	}
+	if summary.ByVirt["bare-metal"] != 2 || summary.ByVirt["kvm"] != 1 {
 		t.Errorf("unexpected by_virt: %+v", summary.ByVirt)
 	}
 	if summary.ByInit["systemd"] != 3 {
@@ -183,19 +186,22 @@ func TestCensusPostAndGet(t *testing.T) {
 	if _, err := time.Parse("2006-01-02 15:04:05", summary.RecentEvents[0].Date); err != nil {
 		t.Errorf("expected date in 'YYYY-MM-DD HH:MM:SS' format, got %q: %v", summary.RecentEvents[0].Date, err)
 	}
-	// Most recent (event 3): arch, gnome, remaster
+	// Most recent (event 3): arch, gnome, wayland, remaster
 	if summary.RecentEvents[0].Country != "XX" || summary.RecentEvents[0].Distro != "arch" ||
-		summary.RecentEvents[0].Desktop != "gnome" || !summary.RecentEvents[0].Remaster || summary.RecentEvents[0].Sysinstall {
+		summary.RecentEvents[0].Desktop != "gnome" || summary.RecentEvents[0].DisplayServer != "wayland" ||
+		!summary.RecentEvents[0].Remaster || summary.RecentEvents[0].Sysinstall {
 		t.Errorf("unexpected recent_events[0]: %+v", summary.RecentEvents[0])
 	}
-	// Second recent (event 2): debian, xfce, sysinstall
+	// Second recent (event 2): debian, xfce, x11, sysinstall
 	if summary.RecentEvents[1].Country != "XX" || summary.RecentEvents[1].Distro != "debian" ||
-		summary.RecentEvents[1].Desktop != "xfce" || summary.RecentEvents[1].Remaster || !summary.RecentEvents[1].Sysinstall {
+		summary.RecentEvents[1].Desktop != "xfce" || summary.RecentEvents[1].DisplayServer != "x11" ||
+		summary.RecentEvents[1].Remaster || !summary.RecentEvents[1].Sysinstall {
 		t.Errorf("unexpected recent_events[1]: %+v", summary.RecentEvents[1])
 	}
-	// Third recent (event 1): debian, xfce, remaster
+	// Third recent (event 1): debian, xfce, x11, remaster
 	if summary.RecentEvents[2].Country != "XX" || summary.RecentEvents[2].Distro != "debian" ||
-		summary.RecentEvents[2].Desktop != "xfce" || !summary.RecentEvents[2].Remaster || summary.RecentEvents[2].Sysinstall {
+		summary.RecentEvents[2].Desktop != "xfce" || summary.RecentEvents[2].DisplayServer != "x11" ||
+		!summary.RecentEvents[2].Remaster || summary.RecentEvents[2].Sysinstall {
 		t.Errorf("unexpected recent_events[2]: %+v", summary.RecentEvents[2])
 	}
 }
@@ -207,9 +213,9 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 
 	// Post event with empty desktop and empty virt to verify fallback defaults
 	events := []string{
-		`{"uuid":"u1","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"","virt":"","init":"systemd"},"options":{"clone":true,"compression":"zstd","coexist":false}}`,
-		`{"uuid":"u2","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"kde","virt":"kvm","init":"systemd"},"options":{"clone":false,"compression":"xz","coexist":true}}`,
-		`{"uuid":"u3","eggs_version":"10.0.9","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"arch":"arm64","desktop":"kde","virt":"","init":"openrc"},"options":{"clone":false,"compression":"zstd","coexist":false}}`,
+		`{"uuid":"u1","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"","display_server":"","virt":"","init":"systemd"},"options":{"clone":true,"compression":"zstd","coexist":false}}`,
+		`{"uuid":"u2","eggs_version":"10.1.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64","desktop":"kde","display_server":"x11","virt":"kvm","init":"systemd"},"options":{"clone":false,"compression":"xz","coexist":true}}`,
+		`{"uuid":"u3","eggs_version":"10.0.9","action":"sysinstall","distro":{"id":"ubuntu"},"system":{"arch":"arm64","desktop":"kde","display_server":"wayland","virt":"","init":"openrc"},"options":{"clone":false,"compression":"zstd","coexist":false}}`,
 	}
 	for _, ev := range events {
 		req := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(ev))
@@ -234,8 +240,11 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 	if sum.ByDesktop["headless/cli"] != 1 || sum.ByDesktop["kde"] != 2 {
 		t.Errorf("expected headless/cli=1 and kde=2, got %+v", sum.ByDesktop)
 	}
-	if sum.ByVirt["physical/none"] != 2 || sum.ByVirt["kvm"] != 1 {
-		t.Errorf("expected physical/none=2 and kvm=1, got %+v", sum.ByVirt)
+	if sum.ByDisplayServer["headless/cli"] != 1 || sum.ByDisplayServer["x11"] != 1 || sum.ByDisplayServer["wayland"] != 1 {
+		t.Errorf("expected headless/cli=1, x11=1, wayland=1, got %+v", sum.ByDisplayServer)
+	}
+	if sum.ByVirt["bare-metal"] != 2 || sum.ByVirt["kvm"] != 1 {
+		t.Errorf("expected bare-metal=2 and kvm=1, got %+v", sum.ByVirt)
 	}
 
 	// 2. ?format=txt and User-Agent: curl/8.5.0
@@ -267,15 +276,16 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Unique Machines:     3",
 				"Remasters/Clones:    2/1",
 				"Sysinstalls/Clones:  1/0",
+				"### Country",
 				"### Distro",
-				"### Arch",
 				"### Desktop",
+				"### Display Server",
 				"### Virt",
 				"### Init",
-				"### Country",
+				"### Arch",
 				"### Version",
 				"headless/cli",
-				"physical/none",
+				"bare-metal",
 			} {
 				if !strings.Contains(body, expected) {
 					t.Errorf("expected text report to contain %q, got:\n%s", expected, body)
@@ -339,7 +349,7 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Recent Events",
 				"id=\"recent-events\"",
 				"headless/cli",
-				"physical/none",
+				"bare-metal",
 			} {
 				if !strings.Contains(body, expected) {
 					t.Errorf("expected HTML dashboard to contain %q", expected)
@@ -359,11 +369,12 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				t.Errorf("expected HTML dashboard to not display Action table")
 			}
 
-			// Verify table order and anchor IDs: country, distro, desktop, virtualization, init-system, arch, version
+			// Verify table order and anchor IDs: country, distro, desktop, display-server, virtualization, init-system, arch, version
 			headers := []string{
 				`id="country"`,
 				`id="distro"`,
 				`id="desktop"`,
+				`id="display-server"`,
 				`id="virtualization"`,
 				`id="init-system"`,
 				`id="arch"`,
@@ -391,12 +402,14 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				`id="sysinstall"`,
 				`id="clones"`,
 				`id="clone"`,
+				`id="display_server"`,
 				`id="virt"`,
 				`id="init"`,
 				`id="eggs-version"`,
 				`href="#country"`,
 				`href="#distro"`,
 				`href="#desktop"`,
+				`href="#display-server"`,
 			} {
 				if !strings.Contains(body, expectedAnchor) {
 					t.Errorf("expected HTML dashboard to contain anchor %q", expectedAnchor)
@@ -698,7 +711,7 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 	txtBody := wTxt.Body.String()
 	for _, expected := range []string{
 		"### Recent Events",
-		"| Date                | Country | Distro | Desktop | Remaster | Sysinstall |",
+		"| Date                | Country | Distro | Desktop | Display Server | Remaster | Sysinstall |",
 		"popos",
 		"mint",
 	} {
@@ -758,7 +771,7 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 	// Top 1 must be openkylin IT with sum_sysinstall = 2
 	top1 := summary.TopInstallations[0]
 	if top1.Distro != "openkylin" || top1.Country != "IT" || top1.Desktop != "cli" ||
-		top1.Arch != "amd64" || top1.EggsVersion != "v26.10.21" || top1.SumSysinstall != 2 {
+		top1.DisplayServer != "headless/cli" || top1.Arch != "amd64" || top1.EggsVersion != "v26.10.21" || top1.SumSysinstall != 2 {
 		t.Errorf("unexpected top 1: %+v", top1)
 	}
 
@@ -773,6 +786,7 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 		"Country",
 		"Distro",
 		"Desktop",
+		"Display Server",
 		"Arch",
 		"Version",
 		"Sysinstalls",
@@ -1006,3 +1020,426 @@ func TestAnalyzeAccessLogs(t *testing.T) {
 		t.Errorf("expected text order: Top Sysinstalls < Recent Events < Unique IP last 15 days, got %d, %d, %d", txtTopIdx, txtRecentIdx, txtUniqueIPIdx)
 	}
 }
+
+func TestCommunityPostAndGet(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	uuid := "01f86488-6b11-59ff-9630-4215b4d2de3a"
+	payload := `{
+		"uuid": "` + uuid + `",
+		"nickname": "artisan",
+		"location": "Rome, Italy",
+		"bio": "Open source developer and Linux enthusiast",
+		"contact": "@artisan",
+		"socials": {
+			"github": "artisan-dev",
+			"telegram": "@artisan"
+		},
+		"source_url": "https://github.com/artisan/distro"
+	}`
+
+	// 1. POST /api/community
+	req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	var postResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &postResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if postResp["status"] != "ok" || postResp["uuid"] != uuid {
+		t.Errorf("unexpected POST response: %+v", postResp)
+	}
+
+	// 2. Verify file persisted on disk as <uuid>.json
+	targetFile := filepath.Join(commDir, uuid+".json")
+	fileBytes, err := os.ReadFile(targetFile)
+	if err != nil {
+		t.Fatalf("expected profile file at %s: %v", targetFile, err)
+	}
+	type Profile struct {
+		UUID      string            `json:"uuid"`
+		Nickname  string            `json:"nickname"`
+		Location  string            `json:"location"`
+		Bio       string            `json:"bio"`
+		Contact   string            `json:"contact"`
+		Socials   map[string]string `json:"socials"`
+		SourceURL string            `json:"source_url"`
+		UpdatedAt string            `json:"updated_at"`
+	}
+	var p Profile
+	if err := json.Unmarshal(fileBytes, &p); err != nil {
+		t.Fatalf("failed to parse saved profile JSON: %v", err)
+	}
+	if p.UUID != uuid || p.Nickname != "artisan" || p.Location != "Rome, Italy" || p.Socials["github"] != "artisan-dev" {
+		t.Errorf("saved profile mismatch: %+v", p)
+	}
+	if p.UpdatedAt == "" {
+		t.Errorf("expected updated_at to be populated")
+	}
+
+	// 3. GET /api/community/{uuid}
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected status 200 on GET, got %d (body: %s)", wGet.Code, wGet.Body.String())
+	}
+	var getProfile Profile
+	if err := json.Unmarshal(wGet.Body.Bytes(), &getProfile); err != nil {
+		t.Fatalf("failed to decode GET profile: %v", err)
+	}
+	if getProfile.UUID != uuid || getProfile.Nickname != "artisan" {
+		t.Errorf("GET profile mismatch: %+v", getProfile)
+	}
+
+	// 4. GET /api/community (list)
+	reqList := httptest.NewRequest(http.MethodGet, "/api/community", nil)
+	wList := httptest.NewRecorder()
+	srv.ServeHTTP(wList, reqList)
+
+	if wList.Code != http.StatusOK {
+		t.Fatalf("expected status 200 on list, got %d", wList.Code)
+	}
+	var listResp struct {
+		Total    int       `json:"total"`
+		Profiles []Profile `json:"profiles"`
+	}
+	if err := json.Unmarshal(wList.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("failed to decode list response: %v", err)
+	}
+	if listResp.Total != 1 || len(listResp.Profiles) != 1 || listResp.Profiles[0].UUID != uuid {
+		t.Errorf("unexpected list response: %+v", listResp)
+	}
+}
+
+func TestCommunityPutAndUrlParams(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	uuid := "02f86488-6b11-59ff-9630-4215b4d2de3b"
+
+	// 1. PUT /api/community/{uuid} with matching UUID
+	payload := `{
+		"uuid": "` + uuid + `",
+		"nickname": "new-nick",
+		"location": "Milan, Italy",
+		"bio": "Linux creator",
+		"source_url": "https://penguins-eggs.net"
+	}`
+	reqPut := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payload))
+	reqPut.Header.Set("Content-Type", "application/json")
+	wPut := httptest.NewRecorder()
+	srv.ServeHTTP(wPut, reqPut)
+
+	if wPut.Code != http.StatusOK {
+		t.Fatalf("expected 200 on PUT, got %d: %s", wPut.Code, wPut.Body.String())
+	}
+
+	// 2. PUT /api/community/{uuid} without UUID in body (should use path UUID)
+	payloadNoUUID := `{
+		"nickname": "updated-nick",
+		"location": "Turin, Italy",
+		"bio": "Dev",
+		"url": "https://github.com/test/repo"
+	}`
+	reqPut2 := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	reqPut2.Header.Set("Content-Type", "application/json")
+	wPut2 := httptest.NewRecorder()
+	srv.ServeHTTP(wPut2, reqPut2)
+
+	if wPut2.Code != http.StatusOK {
+		t.Fatalf("expected 200 on PUT without body UUID, got %d: %s", wPut2.Code, wPut2.Body.String())
+	}
+
+	// Verify profile was updated
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	if !strings.Contains(wGet.Body.String(), "updated-nick") || !strings.Contains(wGet.Body.String(), "Turin, Italy") {
+		t.Errorf("expected updated profile content, got: %s", wGet.Body.String())
+	}
+
+	// 3. PUT with mismatching UUID between path and body
+	mismatchPayload := `{"uuid": "different-uuid-1111-2222-333344445555", "nickname": "bad"}`
+	reqMismatch := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(mismatchPayload))
+	reqMismatch.Header.Set("Content-Type", "application/json")
+	wMismatch := httptest.NewRecorder()
+	srv.ServeHTTP(wMismatch, reqMismatch)
+
+	if wMismatch.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request on UUID mismatch, got %d", wMismatch.Code)
+	}
+}
+
+func TestCommunityAntiSpamEmailBlocked(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	testCases := []struct {
+		name        string
+		payload     string
+		expectBlock bool
+	}{
+		{
+			name:        "explicit email field",
+			payload:     `{"uuid":"uuid-spam-1","nickname":"spammer","email":"spam@spammer.org"}`,
+			expectBlock: true,
+		},
+		{
+			name:        "email in bio",
+			payload:     `{"uuid":"uuid-spam-2","nickname":"legit","bio":"Contact me at hello@spam.com for offers"}`,
+			expectBlock: true,
+		},
+		{
+			name:        "mailto in contact",
+			payload:     `{"uuid":"uuid-spam-3","nickname":"legit","contact":"mailto:dev@domain.org"}`,
+			expectBlock: true,
+		},
+		{
+			name:        "raw email in contact",
+			payload:     `{"uuid":"uuid-spam-4","nickname":"legit","contact":"dev@domain.org"}`,
+			expectBlock: true,
+		},
+		{
+			name:        "email in nickname",
+			payload:     `{"uuid":"uuid-spam-5","nickname":"user@domain.com"}`,
+			expectBlock: true,
+		},
+		{
+			name:        "email in socials map",
+			payload:     `{"uuid":"uuid-spam-6","nickname":"user","socials":{"matrix":"alice@matrix.org","other":"user@domain.net"}}`,
+			expectBlock: true,
+		},
+		{
+			name:        "valid Fediverse handle allowed",
+			payload:     `{"uuid":"uuid-legit-1","nickname":"fedidev","contact":"@user@fosstodon.org","source_url":"https://github.com/myuser"}`,
+			expectBlock: false,
+		},
+		{
+			name:        "valid normal handle allowed",
+			payload:     `{"uuid":"uuid-legit-2","nickname":"penguin","contact":"@penguin_master","source_url":"https://example.org"}`,
+			expectBlock: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(tc.payload))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.ServeHTTP(w, req)
+
+			if tc.expectBlock {
+				if w.Code != http.StatusBadRequest {
+					t.Errorf("expected 400 Bad Request for %s, got %d (body: %s)", tc.name, w.Code, w.Body.String())
+				}
+				if !strings.Contains(w.Body.String(), "email") {
+					t.Errorf("expected error message to mention email for %s, got %s", tc.name, w.Body.String())
+				}
+			} else {
+				if w.Code != http.StatusOK {
+					t.Errorf("expected 200 OK for %s, got %d (body: %s)", tc.name, w.Code, w.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCommunityValidationAndSafety(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	// Missing UUID on POST
+	req1 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"nickname":"noname"}`))
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing UUID, got %d", w1.Code)
+	}
+
+	// Path traversal attempt in UUID
+	req2 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"uuid":"../../etc/passwd","nickname":"hacker"}`))
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for path traversal UUID, got %d", w2.Code)
+	}
+
+	// Path traversal attempt in URL
+	req3 := httptest.NewRequest(http.MethodGet, "/api/community/../../etc/passwd", nil)
+	w3 := httptest.NewRecorder()
+	srv.ServeHTTP(w3, req3)
+	// Router or isValidUUID will reject
+	if w3.Code != http.StatusBadRequest && w3.Code != http.StatusNotFound {
+		t.Errorf("expected 400 or 404 for path traversal in URL, got %d", w3.Code)
+	}
+
+	// Non-existent profile GET
+	req4 := httptest.NewRequest(http.MethodGet, "/api/community/11111111-2222-3333-4444-555555555555", nil)
+	w4 := httptest.NewRecorder()
+	srv.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for non-existent profile, got %d", w4.Code)
+	}
+
+	// Method Not Allowed
+	req5 := httptest.NewRequest(http.MethodPatch, "/api/community", nil)
+	w5 := httptest.NewRecorder()
+	srv.ServeHTTP(w5, req5)
+	if w5.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed, got %d", w5.Code)
+	}
+}
+
+func TestCommunityDecouplingFromCensusTelemetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	// 1. Post census telemetry to /api/census with extra community-like fields
+	censusPayload := `{
+		"uuid": "census-uuid-12345",
+		"eggs_version": "v26.10.23",
+		"action": "remaster",
+		"distro": {"id": "debian", "codename": "trixie"},
+		"system": {"arch": "amd64", "desktop": "xfce", "display_server": "x11"},
+		"options": {"clone": false},
+		"nickname": "rogue-field",
+		"community": {"nickname": "should-not-persist-in-census"}
+	}`
+	reqCensus := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(censusPayload))
+	reqCensus.Header.Set("Content-Type", "application/json")
+	wCensus := httptest.NewRecorder()
+	srv.ServeHTTP(wCensus, reqCensus)
+
+	if wCensus.Code != http.StatusOK {
+		t.Fatalf("expected 200 on census POST, got %d", wCensus.Code)
+	}
+
+	// Read census.jsonl line: verify NO rogue community field was saved
+	censusLineBytes, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatalf("failed to read census file: %v", err)
+	}
+	censusLine := string(censusLineBytes)
+	if strings.Contains(censusLine, "should-not-persist-in-census") || strings.Contains(censusLine, "rogue-field") {
+		t.Errorf("census.jsonl is contaminated with community data: %s", censusLine)
+	}
+	if !strings.Contains(censusLine, `"uuid":"census-uuid-12345"`) || !strings.Contains(censusLine, `"action":"remaster"`) {
+		t.Errorf("census.jsonl missing valid telemetry: %s", censusLine)
+	}
+
+	// 2. Post community profile to /api/community
+	commPayload := `{
+		"uuid": "community-uuid-99999",
+		"nickname": "community-user",
+		"location": "Berlin, Germany",
+		"bio": "Open source advocate",
+		"contact": "@commuser",
+		"source_url": "https://github.com/commuser/repo"
+	}`
+	reqComm := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(commPayload))
+	reqComm.Header.Set("Content-Type", "application/json")
+	wComm := httptest.NewRecorder()
+	srv.ServeHTTP(wComm, reqComm)
+
+	if wComm.Code != http.StatusOK {
+		t.Fatalf("expected 200 on community POST, got %d", wComm.Code)
+	}
+
+	// Verify community file exists separately
+	commFile := filepath.Join(commDir, "community-uuid-99999.json")
+	if _, err := os.Stat(commFile); err != nil {
+		t.Fatalf("expected community file at %s: %v", commFile, err)
+	}
+
+	// Verify census file has not received community profile
+	censusLineBytesAfter, _ := os.ReadFile(dataFile)
+	if strings.Contains(string(censusLineBytesAfter), "community-uuid-99999") || strings.Contains(string(censusLineBytesAfter), "community-user") {
+		t.Errorf("census.jsonl contains community profile data: %s", string(censusLineBytesAfter))
+	}
+
+	// Verify /api/census reports do not include community uuid or profile
+	reqRep := httptest.NewRequest(http.MethodGet, "/api/census?format=txt", nil)
+	wRep := httptest.NewRecorder()
+	srv.ServeHTTP(wRep, reqRep)
+	repTxt := wRep.Body.String()
+	if strings.Contains(repTxt, "community-user") || strings.Contains(repTxt, "Berlin") {
+		t.Errorf("census text report contains community profile data: %s", repTxt)
+	}
+}
+
+func TestCommunityDelete(t *testing.T) {
+	tmpDir := t.TempDir()
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
+	srv.SetCommunityDir(commDir)
+
+	uuid := "12345678-abcd-ef01-2345-6789abcdef01"
+
+	// Create profile
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"uuid":"`+uuid+`","nickname":"temp"}`))
+	wPost := httptest.NewRecorder()
+	srv.ServeHTTP(wPost, reqPost)
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("failed to create profile: %s", wPost.Body.String())
+	}
+
+	// DELETE profile
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	wDel := httptest.NewRecorder()
+	srv.ServeHTTP(wDel, reqDel)
+	if wDel.Code != http.StatusOK {
+		t.Fatalf("expected 200 on DELETE, got %d: %s", wDel.Code, wDel.Body.String())
+	}
+
+	// Verify file is gone
+	if _, err := os.Stat(filepath.Join(commDir, uuid+".json")); !os.IsNotExist(err) {
+		t.Errorf("expected file to be deleted")
+	}
+
+	// GET after delete returns 404
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	if wGet.Code != http.StatusNotFound {
+		t.Errorf("expected 404 on GET after delete, got %d", wGet.Code)
+	}
+
+	// Second DELETE returns 404
+	reqDel2 := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	wDel2 := httptest.NewRecorder()
+	srv.ServeHTTP(wDel2, reqDel2)
+	if wDel2.Code != http.StatusNotFound {
+		t.Errorf("expected 404 on DELETE non-existent, got %d", wDel2.Code)
+	}
+}
+

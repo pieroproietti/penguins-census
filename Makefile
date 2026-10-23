@@ -21,6 +21,7 @@ deb: build
 	install -d -m 0755 $(STAGE)/usr/sbin
 	install -d -m 0755 $(STAGE)/lib/systemd/system
 	install -d -m 0750 $(STAGE)/var/lib/penguins-census
+	install -d -m 0750 $(STAGE)/var/lib/penguins-census/community
 
 	install -m 0755 $(PACKAGE) $(STAGE)/usr/bin/$(PACKAGE)
 	install -m 0755 packaging/penguins-census-update-geoip $(STAGE)/usr/sbin/penguins-census-update-geoip

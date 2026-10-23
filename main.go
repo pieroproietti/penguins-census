@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -32,10 +33,11 @@ type DistroInfo struct {
 }
 
 type SystemInfo struct {
-	Arch    string `json:"arch"`
-	Desktop string `json:"desktop"`
-	Virt    string `json:"virt"`
-	Init    string `json:"init"`
+	Arch          string `json:"arch"`
+	Desktop       string `json:"desktop"`
+	DisplayServer string `json:"display_server"`
+	Virt          string `json:"virt"`
+	Init          string `json:"init"`
 }
 
 type OptionsInfo struct {
@@ -43,10 +45,45 @@ type OptionsInfo struct {
 	Coexist bool `json:"coexist"`
 }
 
+var (
+	emailForbiddenPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+	uuidSafePattern       = regexp.MustCompile(`^[a-zA-Z0-9_\-]{8,64}$`)
+)
+
+type CommunityProfile struct {
+	UUID      string            `json:"uuid"`
+	Nickname  string            `json:"nickname,omitempty"`
+	Location  string            `json:"location,omitempty"`
+	Bio       string            `json:"bio,omitempty"`
+	Contact   string            `json:"contact,omitempty"`
+	Socials   map[string]string `json:"socials,omitempty"`
+	SourceURL string            `json:"source_url,omitempty"`
+	Enabled   *bool             `json:"enabled,omitempty"`
+	UpdatedAt string            `json:"updated_at,omitempty"`
+}
+
+type rawCommunityPayload struct {
+	UUID          string               `json:"uuid"`
+	Nickname      string               `json:"nickname"`
+	Location      string               `json:"location"`
+	Bio           string               `json:"bio"`
+	Contact       string               `json:"contact"`
+	Social        interface{}          `json:"social"`
+	Socials       map[string]string    `json:"socials"`
+	SourceURL     string               `json:"source_url"`
+	URL           string               `json:"url"`
+	Website       string               `json:"website"`
+	RepositoryURL string               `json:"repository_url"`
+	RepoURL       string               `json:"repo_url"`
+	Enabled       *bool                `json:"enabled"`
+	Community     *rawCommunityPayload `json:"community"`
+}
+
 type CensusRecord struct {
 	Timestamp   string      `json:"timestamp"`
 	Country     string      `json:"country"`
 	UUID        string      `json:"uuid"`
+	ParentID    string      `json:"parent_id,omitempty"`
 	EggsVersion string      `json:"eggs_version"`
 	Action      string      `json:"action"`
 	Distro      DistroInfo  `json:"distro"`
@@ -55,18 +92,20 @@ type CensusRecord struct {
 }
 
 type RecentEvent struct {
-	Date       string `json:"date"`
-	Country    string `json:"country"`
-	Distro     string `json:"distro"`
-	Desktop    string `json:"desktop"`
-	Remaster   bool   `json:"remaster"`
-	Sysinstall bool   `json:"sysinstall"`
+	Date          string `json:"date"`
+	Country       string `json:"country"`
+	Distro        string `json:"distro"`
+	Desktop       string `json:"desktop"`
+	DisplayServer string `json:"display_server"`
+	Remaster      bool   `json:"remaster"`
+	Sysinstall    bool   `json:"sysinstall"`
 }
 
 type TopInstallation struct {
 	Country       string `json:"country"`
 	Distro        string `json:"distro"`
 	Desktop       string `json:"desktop"`
+	DisplayServer string `json:"display_server"`
 	Arch          string `json:"arch"`
 	EggsVersion   string `json:"eggs_version"`
 	SumSysinstall int    `json:"sum_sysinstall"`
@@ -106,6 +145,7 @@ type CensusSummary struct {
 	ByDistro         map[string]int       `json:"by_distro"`
 	ByArch           map[string]int       `json:"by_arch"`
 	ByDesktop        map[string]int       `json:"by_desktop"`
+	ByDisplayServer  map[string]int       `json:"by_display_server"`
 	ByVirt           map[string]int       `json:"by_virt"`
 	ByInit           map[string]int       `json:"by_init"`
 	ByCountry        map[string]int       `json:"by_country"`
@@ -125,16 +165,27 @@ type mmdbCountryRecord struct {
 }
 
 type CensusServer struct {
-	mu       sync.Mutex
-	dataPath string
-	mmdbPath string
-	mmdb     *maxminddb.Reader
+	mu           sync.Mutex
+	dataPath     string
+	mmdbPath     string
+	mmdb         *maxminddb.Reader
+	communityDir string
 }
 
 func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
+	commDir := ""
+	if dataPath != "" {
+		fi, err := os.Stat(dataPath)
+		if err == nil && fi.IsDir() {
+			commDir = filepath.Join(dataPath, "community")
+		} else {
+			commDir = filepath.Join(filepath.Dir(dataPath), "community")
+		}
+	}
 	s := &CensusServer{
-		dataPath: dataPath,
-		mmdbPath: mmdbPath,
+		dataPath:     dataPath,
+		mmdbPath:     mmdbPath,
+		communityDir: commDir,
 	}
 	if mmdbPath != "" {
 		if reader, err := maxminddb.Open(mmdbPath); err == nil {
@@ -142,6 +193,24 @@ func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
 		}
 	}
 	return s
+}
+
+func (s *CensusServer) SetCommunityDir(dir string) {
+	s.communityDir = dir
+}
+
+func (s *CensusServer) getCommunityDir() string {
+	if s.communityDir != "" {
+		return s.communityDir
+	}
+	if s.dataPath != "" {
+		fi, err := os.Stat(s.dataPath)
+		if err == nil && fi.IsDir() {
+			return filepath.Join(s.dataPath, "community")
+		}
+		return filepath.Join(filepath.Dir(s.dataPath), "community")
+	}
+	return "/var/lib/penguins-census/community"
 }
 
 func (s *CensusServer) Close() error {
@@ -195,20 +264,25 @@ func (s *CensusServer) resolveCountry(r *http.Request) string {
 }
 
 func (s *CensusServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/api/census" {
-		http.NotFound(w, r)
+	if r.URL.Path == "/api/census" {
+		switch r.Method {
+		case http.MethodPost:
+			s.handlePost(w, r)
+		case http.MethodGet:
+			s.handleGet(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST")
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
 		return
 	}
 
-	switch r.Method {
-	case http.MethodPost:
-		s.handlePost(w, r)
-	case http.MethodGet:
-		s.handleGet(w, r)
-	default:
-		w.Header().Set("Allow", "GET, POST")
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	if r.URL.Path == "/api/community" || strings.HasPrefix(r.URL.Path, "/api/community/") {
+		s.handleCommunity(w, r)
+		return
 	}
+
+	http.NotFound(w, r)
 }
 
 func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
@@ -259,6 +333,423 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"failed to persist record"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func isValidUUID(u string) bool {
+	u = strings.TrimSpace(u)
+	if u == "" || len(u) > 64 {
+		return false
+	}
+	if strings.Contains(u, "/") || strings.Contains(u, "\\") || strings.Contains(u, "..") {
+		return false
+	}
+	return uuidSafePattern.MatchString(u)
+}
+
+func hasEmailString(val string) bool {
+	trimmed := strings.TrimSpace(val)
+	if trimmed == "" {
+		return false
+	}
+	// Fediverse handles like @user@instance.social are valid handles, not emails
+	if strings.HasPrefix(trimmed, "@") && strings.Count(trimmed, "@") >= 2 {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "mailto:") {
+		return true
+	}
+	return emailForbiddenPattern.MatchString(trimmed)
+}
+
+func containsEmailInPayload(data interface{}) bool {
+	switch v := data.(type) {
+	case string:
+		return hasEmailString(v)
+	case map[string]interface{}:
+		for k, val := range v {
+			if strings.EqualFold(k, "email") {
+				if s, ok := val.(string); ok && strings.TrimSpace(s) != "" {
+					return true
+				}
+				if val != nil && val != false {
+					return true
+				}
+			}
+			if containsEmailInPayload(val) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if containsEmailInPayload(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *CensusServer) saveCommunityProfile(profile CommunityProfile) error {
+	dir := s.getCommunityDir()
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", profile.UUID))
+	tmpFile := target + ".tmp"
+
+	if err := os.WriteFile(tmpFile, data, 0640); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, target)
+}
+
+func (s *CensusServer) getCommunityProfile(uuid string) (*CommunityProfile, error) {
+	dir := s.getCommunityDir()
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", uuid))
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return nil, err
+	}
+
+	var p CommunityProfile
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (s *CensusServer) listCommunityProfiles() ([]CommunityProfile, error) {
+	dir := s.getCommunityDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []CommunityProfile{}, nil
+		}
+		return nil, err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name() < entries[j].Name()
+	})
+
+	profiles := make([]CommunityProfile, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var p CommunityProfile
+		if err := json.Unmarshal(data, &p); err == nil && p.UUID != "" {
+			profiles = append(profiles, p)
+		}
+	}
+	return profiles, nil
+}
+
+func (s *CensusServer) deleteCommunityProfile(uuid string) error {
+	dir := s.getCommunityDir()
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", uuid))
+	return os.Remove(target)
+}
+
+func (s *CensusServer) handleCommunity(w http.ResponseWriter, r *http.Request) {
+	subpath := strings.TrimPrefix(r.URL.Path, "/api/community")
+	subpath = strings.TrimPrefix(subpath, "/")
+	subpath = strings.TrimSuffix(subpath, "/")
+	subpath = strings.TrimSuffix(subpath, ".json")
+
+	if subpath == "" {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut:
+			s.handleSaveCommunityProfile(w, r, "")
+		case http.MethodGet:
+			s.handleListCommunityProfiles(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST, PUT")
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	targetUUID := subpath
+	if !isValidUUID(targetUUID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid uuid format in URL"}`))
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut, http.MethodPost:
+		s.handleSaveCommunityProfile(w, r, targetUUID)
+	case http.MethodGet:
+		s.handleGetCommunityProfile(w, r, targetUUID)
+	case http.MethodDelete:
+		s.handleDeleteCommunityProfile(w, r, targetUUID)
+	default:
+		w.Header().Set("Allow", "GET, POST, PUT, DELETE")
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http.Request, pathUUID string) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	defer r.Body.Close()
+
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"failed to read request body or body too large"}`))
+		return
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid JSON payload"}`))
+		return
+	}
+
+	// Anti-Spam: validate that no email address is present in the payload
+	if containsEmailInPayload(rawMap) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"email addresses are forbidden to prevent spam"}`))
+		return
+	}
+
+	var raw rawCommunityPayload
+	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid JSON structure"}`))
+		return
+	}
+
+	// Support wrapping inside "community": { ... }
+	if raw.Community != nil {
+		if raw.UUID == "" {
+			raw.UUID = raw.Community.UUID
+		}
+		if raw.Nickname == "" {
+			raw.Nickname = raw.Community.Nickname
+		}
+		if raw.Location == "" {
+			raw.Location = raw.Community.Location
+		}
+		if raw.Bio == "" {
+			raw.Bio = raw.Community.Bio
+		}
+		if raw.Contact == "" {
+			raw.Contact = raw.Community.Contact
+		}
+		if raw.Social == nil {
+			raw.Social = raw.Community.Social
+		}
+		if raw.Socials == nil {
+			raw.Socials = raw.Community.Socials
+		}
+		if raw.SourceURL == "" {
+			raw.SourceURL = raw.Community.SourceURL
+		}
+		if raw.URL == "" {
+			raw.URL = raw.Community.URL
+		}
+		if raw.Website == "" {
+			raw.Website = raw.Community.Website
+		}
+		if raw.RepositoryURL == "" {
+			raw.RepositoryURL = raw.Community.RepositoryURL
+		}
+		if raw.RepoURL == "" {
+			raw.RepoURL = raw.Community.RepoURL
+		}
+		if raw.Enabled == nil {
+			raw.Enabled = raw.Community.Enabled
+		}
+	}
+
+	finalUUID := strings.TrimSpace(raw.UUID)
+	if pathUUID != "" {
+		if finalUUID != "" && !strings.EqualFold(finalUUID, pathUUID) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"uuid in path does not match uuid in payload"}`))
+			return
+		}
+		finalUUID = pathUUID
+	}
+
+	if !isValidUUID(finalUUID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"valid uuid is required"}`))
+		return
+	}
+
+	sourceURL := strings.TrimSpace(raw.SourceURL)
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(raw.URL)
+	}
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(raw.Website)
+	}
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(raw.RepositoryURL)
+	}
+	if sourceURL == "" {
+		sourceURL = strings.TrimSpace(raw.RepoURL)
+	}
+
+	contact := strings.TrimSpace(raw.Contact)
+	socials := make(map[string]string)
+	if raw.Socials != nil {
+		for k, v := range raw.Socials {
+			kTrim := strings.TrimSpace(k)
+			vTrim := strings.TrimSpace(v)
+			if kTrim != "" && vTrim != "" {
+				socials[kTrim] = vTrim
+			}
+		}
+	}
+
+	if raw.Social != nil {
+		switch s := raw.Social.(type) {
+		case string:
+			if contact == "" {
+				contact = strings.TrimSpace(s)
+			}
+		case map[string]interface{}:
+			for k, v := range s {
+				kTrim := strings.TrimSpace(k)
+				if strVal, ok := v.(string); ok {
+					vTrim := strings.TrimSpace(strVal)
+					if kTrim != "" && vTrim != "" {
+						socials[kTrim] = vTrim
+					}
+				}
+			}
+		}
+	}
+
+	profile := CommunityProfile{
+		UUID:      finalUUID,
+		Nickname:  strings.TrimSpace(raw.Nickname),
+		Location:  strings.TrimSpace(raw.Location),
+		Bio:       strings.TrimSpace(raw.Bio),
+		Contact:   contact,
+		Socials:   socials,
+		SourceURL: sourceURL,
+		Enabled:   raw.Enabled,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	s.mu.Lock()
+	err = s.saveCommunityProfile(profile)
+	s.mu.Unlock()
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to save community profile"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	resp, _ := json.Marshal(map[string]string{
+		"status": "ok",
+		"uuid":   profile.UUID,
+	})
+	_, _ = w.Write(resp)
+}
+
+func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
+	s.mu.Lock()
+	profile, err := s.getCommunityProfile(uuid)
+	s.mu.Unlock()
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"community profile not found"}`))
+		return
+	}
+
+	resp, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to serialize profile"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	profiles, err := s.listCommunityProfiles()
+	s.mu.Unlock()
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to list community profiles"}`))
+		return
+	}
+
+	type listResponse struct {
+		Total    int                `json:"total"`
+		Profiles []CommunityProfile `json:"profiles"`
+	}
+
+	resp, err := json.MarshalIndent(listResponse{
+		Total:    len(profiles),
+		Profiles: profiles,
+	}, "", "  ")
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to serialize profiles"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
+}
+
+func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
+	s.mu.Lock()
+	err := s.deleteCommunityProfile(uuid)
+	s.mu.Unlock()
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"community profile not found"}`))
 		return
 	}
 
@@ -347,6 +838,7 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		ByDistro:         make(map[string]int),
 		ByArch:           make(map[string]int),
 		ByDesktop:        make(map[string]int),
+		ByDisplayServer:  make(map[string]int),
 		ByVirt:           make(map[string]int),
 		ByInit:           make(map[string]int),
 		ByCountry:        make(map[string]int),
@@ -388,9 +880,15 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		}
 		summary.ByDesktop[desktop]++
 
+		displayServer := strings.TrimSpace(rec.System.DisplayServer)
+		if displayServer == "" {
+			displayServer = "headless/cli"
+		}
+		summary.ByDisplayServer[displayServer]++
+
 		virt := strings.TrimSpace(rec.System.Virt)
-		if virt == "" {
-			virt = "physical/none"
+		if virt == "" || virt == "none" || virt == "physical/none" {
+			virt = "bare-metal"
 		}
 		summary.ByVirt[virt]++
 
@@ -433,13 +931,18 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		if desktop == "" {
 			desktop = "headless/cli"
 		}
+		displayServer := strings.TrimSpace(r.System.DisplayServer)
+		if displayServer == "" {
+			displayServer = "headless/cli"
+		}
 		summary.RecentEvents = append(summary.RecentEvents, RecentEvent{
-			Date:       formatEventDate(r.Timestamp),
-			Country:    country,
-			Distro:     distro,
-			Desktop:    desktop,
-			Remaster:   r.Action == "remaster",
-			Sysinstall: r.Action == "sysinstall",
+			Date:          formatEventDate(r.Timestamp),
+			Country:       country,
+			Distro:        distro,
+			Desktop:       desktop,
+			DisplayServer: displayServer,
+			Remaster:      r.Action == "remaster",
+			Sysinstall:    r.Action == "sysinstall",
 		})
 	}
 
@@ -451,11 +954,12 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 
 	// Aggregate unique sysinstall installations
 	type groupKey struct {
-		country     string
-		distro      string
-		desktop     string
-		arch        string
-		eggsVersion string
+		country       string
+		distro        string
+		desktop       string
+		displayServer string
+		arch          string
+		eggsVersion   string
 	}
 	groupCounts := make(map[groupKey]int)
 	for _, r := range uniqueSysinstalls {
@@ -471,6 +975,10 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		if desktop == "" {
 			desktop = "headless/cli"
 		}
+		displayServer := strings.TrimSpace(r.System.DisplayServer)
+		if displayServer == "" {
+			displayServer = "headless/cli"
+		}
 		arch := strings.TrimSpace(r.System.Arch)
 		if arch == "" {
 			arch = "unknown"
@@ -480,11 +988,12 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			ver = "unknown"
 		}
 		key := groupKey{
-			country:     country,
-			distro:      distro,
-			desktop:     desktop,
-			arch:        arch,
-			eggsVersion: ver,
+			country:       country,
+			distro:        distro,
+			desktop:       desktop,
+			displayServer: displayServer,
+			arch:          arch,
+			eggsVersion:   ver,
 		}
 		groupCounts[key]++
 	}
@@ -495,6 +1004,7 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			Country:       k.country,
 			Distro:        k.distro,
 			Desktop:       k.desktop,
+			DisplayServer: k.displayServer,
 			Arch:          k.arch,
 			EggsVersion:   k.eggsVersion,
 			SumSysinstall: count,
@@ -513,6 +1023,9 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		}
 		if topList[i].Desktop != topList[j].Desktop {
 			return topList[i].Desktop < topList[j].Desktop
+		}
+		if topList[i].DisplayServer != topList[j].DisplayServer {
+			return topList[i].DisplayServer < topList[j].DisplayServer
 		}
 		if topList[i].Arch != topList[j].Arch {
 			return topList[i].Arch < topList[j].Arch
@@ -655,6 +1168,7 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeMarkdownTable(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
 	writeMarkdownTable(&buf, "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
+	writeMarkdownTable(&buf, "Display Server", "Display Server", s.ByDisplayServer, s.TotalEvents)
 	writeMarkdownTable(&buf, "Virt", "Virt", s.ByVirt, s.TotalEvents)
 	writeMarkdownTable(&buf, "Init", "Init", s.ByInit, s.TotalEvents)
 	writeMarkdownTable(&buf, "Arch", "Arch", s.ByArch, s.TotalEvents)
@@ -690,29 +1204,33 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 	countryW := len("Country")
 	distroW := len("Distro")
 	desktopW := len("Desktop")
+	dispW := len("Display Server")
 	archW := len("Arch")
 	verW := len("Version")
 	sumW := len("Sysinstalls")
 
 	if len(list) == 0 {
-		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
 			countryW, "Country",
 			distroW, "Distro",
 			desktopW, "Desktop",
+			dispW, "Display Server",
 			archW, "Arch",
 			verW, "Version",
 			sumW, "Sysinstalls")
-		fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
+		fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
 			strings.Repeat("-", countryW),
 			strings.Repeat("-", distroW),
 			strings.Repeat("-", desktopW),
+			strings.Repeat("-", dispW),
 			strings.Repeat("-", archW),
 			strings.Repeat("-", verW),
 			strings.Repeat("-", sumW-1))
-		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n\n",
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n\n",
 			countryW, "(no data)",
 			distroW, "-",
 			desktopW, "-",
+			dispW, "-",
 			archW, "-",
 			verW, "-",
 			sumW, 0)
@@ -729,6 +1247,9 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 		if len(item.Desktop) > desktopW {
 			desktopW = len(item.Desktop)
 		}
+		if len(item.DisplayServer) > dispW {
+			dispW = len(item.DisplayServer)
+		}
 		if len(item.Arch) > archW {
 			archW = len(item.Arch)
 		}
@@ -737,26 +1258,29 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 		}
 	}
 
-	fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
+	fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
 		countryW, "Country",
 		distroW, "Distro",
 		desktopW, "Desktop",
+		dispW, "Display Server",
 		archW, "Arch",
 		verW, "Version",
 		sumW, "Sysinstalls")
-	fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
+	fmt.Fprintf(buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s:|\n",
 		strings.Repeat("-", countryW),
 		strings.Repeat("-", distroW),
 		strings.Repeat("-", desktopW),
+		strings.Repeat("-", dispW),
 		strings.Repeat("-", archW),
 		strings.Repeat("-", verW),
 		strings.Repeat("-", sumW-1))
 
 	for _, item := range list {
-		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n",
+		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n",
 			countryW, item.Country,
 			distroW, item.Distro,
 			desktopW, item.Desktop,
+			dispW, item.DisplayServer,
 			archW, item.Arch,
 			verW, item.EggsVersion,
 			sumW, item.SumSysinstall)
@@ -783,10 +1307,10 @@ func formatEventDate(ts string) string {
 
 func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 	fmt.Fprintf(buf, "### Recent Events\n\n")
-	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Remaster | Sysinstall |\n")
-	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|:--------:|:----------:|\n")
+	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Display Server | Remaster | Sysinstall |\n")
+	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|----------------|:--------:|:----------:|\n")
 	if len(events) == 0 {
-		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -        | -          |\n\n")
+		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -              | -        | -          |\n\n")
 		return
 	}
 	for _, ev := range events {
@@ -802,7 +1326,7 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 		if date == "" {
 			date = "-"
 		}
-		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-8s | %-10s |\n", date, ev.Country, ev.Distro, ev.Desktop, rem, sys)
+		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-8s | %-10s |\n", date, ev.Country, ev.Distro, ev.Desktop, ev.DisplayServer, rem, sys)
 	}
 	buf.WriteString("\n")
 }
@@ -838,6 +1362,7 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
           <th>Country</th>
           <th>Distro</th>
           <th>Desktop</th>
+          <th>Display Server</th>
           <th class="center">Remaster</th>
           <th class="center">Sysinstall</th>
         </tr>
@@ -845,7 +1370,7 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
       <tbody>
 `)
 	if len(events) == 0 {
-		buf.WriteString(`        <tr><td colspan="6" class="empty">No events recorded yet</td></tr>
+		buf.WriteString(`        <tr><td colspan="7" class="empty">No events recorded yet</td></tr>
 `)
 	} else {
 		for _, e := range events {
@@ -861,8 +1386,8 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 			if date == "" {
 				date = `<span class="muted">&mdash;</span>`
 			}
-			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
-`, date, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), rem, sys)
+			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
+`, date, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), html.EscapeString(e.DisplayServer), rem, sys)
 		}
 	}
 	buf.WriteString(`      </tbody>
@@ -1096,6 +1621,7 @@ th {
 	writeHTMLTableCard(&buf, "country", "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeHTMLTableCard(&buf, "distro", "Distro", "Distro", s.ByDistro, s.TotalEvents)
 	writeHTMLTableCard(&buf, "desktop", "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
+	writeHTMLTableCard(&buf, "display-server", "Display Server", "Display Server", s.ByDisplayServer, s.TotalEvents, "display_server")
 	writeHTMLTableCard(&buf, "virtualization", "Virtualization", "Virt", s.ByVirt, s.TotalEvents, "virt")
 	writeHTMLTableCard(&buf, "init-system", "Init System", "Init", s.ByInit, s.TotalEvents, "init")
 	writeHTMLTableCard(&buf, "arch", "Arch", "Arch", s.ByArch, s.TotalEvents)
@@ -1154,6 +1680,7 @@ func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
           <th>Country</th>
           <th>Distro</th>
           <th>Desktop</th>
+          <th>Display Server</th>
           <th>Arch</th>
           <th>Version</th>
           <th class="num">Sysinstalls</th>
@@ -1162,15 +1689,16 @@ func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
       <tbody>
 `)
 	if len(list) == 0 {
-		buf.WriteString(`        <tr><td colspan="6" class="empty">No sysinstalls recorded yet</td></tr>
+		buf.WriteString(`        <tr><td colspan="7" class="empty">No sysinstalls recorded yet</td></tr>
 `)
 	} else {
 		for _, item := range list {
-			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">%d</td></tr>
+			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">%d</td></tr>
 `,
 				html.EscapeString(item.Country),
 				html.EscapeString(item.Distro),
 				html.EscapeString(item.Desktop),
+				html.EscapeString(item.DisplayServer),
 				html.EscapeString(item.Arch),
 				html.EscapeString(item.EggsVersion),
 				item.SumSysinstall,
@@ -1555,10 +2083,12 @@ func main() {
 	if defaultAddr == "" {
 		defaultAddr = "127.0.0.1:8080"
 	}
+	defaultCommDir := os.Getenv("CENSUS_COMMUNITY_DIR")
 
 	addr := flag.String("addr", defaultAddr, "HTTP listen address (env CENSUS_ADDR)")
 	dataPath := flag.String("data", "/var/lib/penguins-census/census.jsonl", "Path to census JSONL file or directory")
 	mmdbPath := flag.String("mmdb", "/var/lib/penguins-census/dbip-country.mmdb", "Path to GeoIP MMDB file")
+	communityDir := flag.String("community-dir", defaultCommDir, "Directory to store community profiles (default: <dataDir>/community)")
 	reset := flag.Bool("reset", false, "Reset (truncate) all census counts and exit")
 	top := flag.Bool("top", false, "Print top 10 unique sysinstall rankings and exit")
 	report := flag.Bool("report", false, "Print full census markdown report to terminal and exit")
@@ -1611,9 +2141,12 @@ func main() {
 	}
 
 	srv := NewCensusServer(*dataPath, *mmdbPath)
+	if *communityDir != "" {
+		srv.SetCommunityDir(*communityDir)
+	}
 	defer srv.Close()
 
-	log.Printf("penguins-census listening on %s (data=%s, mmdb=%s)", *addr, *dataPath, *mmdbPath)
+	log.Printf("penguins-census listening on %s (data=%s, mmdb=%s, community=%s)", *addr, *dataPath, *mmdbPath, srv.getCommunityDir())
 	if err := http.ListenAndServe(*addr, srv); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

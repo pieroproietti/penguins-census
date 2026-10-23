@@ -42,6 +42,7 @@ You can view the live aggregated statistics directly in your browser or via the 
   "system": {
     "arch": "amd64",
     "desktop": "xfce",
+    "display_server": "x11",
     "virt": "kvm",
     "init": "systemd"
   },
@@ -51,6 +52,36 @@ You can view the live aggregated statistics directly in your browser or via the 
   }
 }
 ```
+
+## Community Profiles API (`/api/community`)
+
+To foster community connections while strictly maintaining telemetry anonymity, `penguins-census` provides an isolated community profile endpoint. Community profiles are completely decoupled from the telemetry log and persisted as individual `<uuid>.json` files in `/var/lib/penguins-census/community/`.
+
+### Endpoints
+- **Save Profile**: `POST /api/community` or `PUT /api/community/{uuid}`
+- **Retrieve Profile**: `GET /api/community/{uuid}`
+- **List Profiles**: `GET /api/community`
+
+### Payload Schema
+
+```json
+{
+  "uuid": "01f86488-6b11-59ff-9630-4215b4d2de3a",
+  "nickname": "artisan",
+  "location": "Rome, Italy",
+  "bio": "Linux remixer and developer",
+  "contact": "@artisan",
+  "socials": {
+    "github": "artisan-dev",
+    "telegram": "@artisan"
+  },
+  "source_url": "https://github.com/artisan/distro"
+}
+```
+
+### Privacy & Anti-Spam
+- **Strict Email Prohibition**: Any profile containing an email address (in `email`, `bio`, `contact`, `nickname`, or `socials`) is rejected with HTTP 400 to prevent spam and protect user privacy. Fediverse handles (e.g. `@user@instance.social`) are permitted.
+- **Decoupled Telemetry**: The main telemetry engine (`/api/census`) ignores and never stores user profile attributes in `census.jsonl`.
 
 ## Building and Installing the Debian Package
 
