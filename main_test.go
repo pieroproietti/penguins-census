@@ -1443,3 +1443,318 @@ func TestCommunityDelete(t *testing.T) {
 	}
 }
 
+func TestCommunityCrossReferenceWithCensus(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+	if err := os.MkdirAll(commDir, 0755); err != nil {
+		t.Fatalf("failed to create commDir: %v", err)
+	}
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	uuid1 := "11111111-1111-1111-1111-111111111111"
+	uuid2 := "22222222-2222-2222-2222-222222222222"
+	uuidDisabled := "44444444-4444-4444-4444-444444444444"
+	uuidAnon := "99999999-9999-9999-9999-999999999999"
+
+	// 1. Create telemetry events in census.jsonl
+	events := []string{
+		// UUID 1: first remaster
+		`{"timestamp":"2026-10-23T10:00:00Z","country":"IT","uuid":"` + uuid1 + `","action":"remaster","distro":{"id":"debian","codename":"bookworm","release":"12"},"system":{"arch":"amd64","desktop":"xfce"}}`,
+		// UUID 1: second remaster (latest)
+		`{"timestamp":"2026-10-23T14:30:00Z","country":"IT","uuid":"` + uuid1 + `","action":"remaster","distro":{"id":"debian","codename":"trixie","release":"13"},"system":{"arch":"amd64","desktop":"xfce"}}`,
+		// UUID 1: sysinstall (should not overwrite latest remaster info)
+		`{"timestamp":"2026-10-23T15:00:00Z","country":"IT","uuid":"` + uuid1 + `","action":"sysinstall","distro":{"id":"debian","codename":"trixie","release":"13"},"system":{"arch":"amd64","desktop":"xfce"}}`,
+		// UUID 2: one remaster
+		`{"timestamp":"2026-10-23T12:00:00Z","country":"DE","uuid":"` + uuid2 + `","action":"remaster","distro":{"id":"arch","codename":"rolling","release":"rolling"},"system":{"arch":"x86_64","desktop":"kde"}}`,
+		// UUID Disabled: one remaster
+		`{"timestamp":"2026-10-23T11:00:00Z","country":"FR","uuid":"` + uuidDisabled + `","action":"remaster","distro":{"id":"ubuntu","codename":"noble","release":"24.04"},"system":{"arch":"amd64","desktop":"gnome"}}`,
+		// Anonymous machine: remaster
+		`{"timestamp":"2026-10-23T16:00:00Z","country":"US","uuid":"` + uuidAnon + `","action":"remaster","distro":{"id":"fedora","codename":"rawhide","release":"41"},"system":{"arch":"x86_64","desktop":"gnome"}}`,
+	}
+	censusContent := strings.Join(events, "\n") + "\n"
+	if err := os.WriteFile(dataFile, []byte(censusContent), 0644); err != nil {
+		t.Fatalf("failed to write census.jsonl: %v", err)
+	}
+
+	// Record census.jsonl size & content to verify privacy: file must NEVER be modified
+	originalCensusBytes, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatalf("failed to read census file: %v", err)
+	}
+
+	// 2. Save community profiles
+	p1 := `{
+		"uuid": "` + uuid1 + `",
+		"nickname": "artisan1",
+		"location": "Roma, IT",
+		"bio": "Distro artisan building Debian remixes",
+		"contact": "@artisan1",
+		"socials": {
+			"github": "artisan1-dev",
+			"telegram": "@artisan1"
+		},
+		"source_url": "https://github.com/artisan1/distro",
+		"enabled": true
+	}`
+	p2 := `{
+		"uuid": "` + uuid2 + `",
+		"nickname": "artisan2",
+		"location": "Berlin, DE",
+		"bio": "Arch Linux customizer",
+		"socials": {
+			"gitlab": "artisan2"
+		},
+		"source_url": "https://gitlab.com/artisan2/arch-distro",
+		"enabled": true
+	}`
+	pDisabled := `{
+		"uuid": "` + uuidDisabled + `",
+		"nickname": "hidden_artisan",
+		"location": "Paris, FR",
+		"bio": "Disabled profile",
+		"enabled": false
+	}`
+
+	for _, payload := range []string{p1, p2, pDisabled} {
+		req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("failed to save profile: %s", w.Body.String())
+		}
+	}
+
+	// 3. Test JSON view: GET /api/community?format=json
+	reqJSON := httptest.NewRequest(http.MethodGet, "/api/community?format=json", nil)
+	wJSON := httptest.NewRecorder()
+	srv.ServeHTTP(wJSON, reqJSON)
+	if wJSON.Code != http.StatusOK {
+		t.Fatalf("expected 200 on JSON, got %d: %s", wJSON.Code, wJSON.Body.String())
+	}
+	var jsonResp struct {
+		Total    int              `json:"total"`
+		Profiles []ArtisanProfile `json:"profiles"`
+	}
+	if err := json.Unmarshal(wJSON.Body.Bytes(), &jsonResp); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+
+	// Disabled profile should be excluded from active list
+	if jsonResp.Total != 2 || len(jsonResp.Profiles) != 2 {
+		t.Fatalf("expected 2 active profiles, got total=%d, len=%d", jsonResp.Total, len(jsonResp.Profiles))
+	}
+
+	foundP1 := false
+	foundP2 := false
+	for _, prof := range jsonResp.Profiles {
+		if prof.UUID == uuid1 {
+			foundP1 = true
+			if prof.Nickname != "artisan1" {
+				t.Errorf("artisan1 nickname mismatch: %s", prof.Nickname)
+			}
+			if prof.RemasterCount != 2 {
+				t.Errorf("expected 2 remasters for artisan1, got %d", prof.RemasterCount)
+			}
+			if prof.Country != "IT" {
+				t.Errorf("expected country IT, got %s", prof.Country)
+			}
+			if prof.LastRemasterAt != "2026-10-23T14:30:00Z" {
+				t.Errorf("expected last remaster at 14:30, got %s", prof.LastRemasterAt)
+			}
+			if prof.LatestRemaster == nil {
+				t.Fatalf("expected latest_remaster block to be populated")
+			}
+			if prof.LatestRemaster.Distro.ID != "debian" || prof.LatestRemaster.Distro.Codename != "trixie" || prof.LatestRemaster.Distro.Release != "13" {
+				t.Errorf("latest remaster distro mismatch: %+v", prof.LatestRemaster.Distro)
+			}
+			if prof.LatestRemaster.System.Arch != "amd64" || prof.LatestRemaster.System.Desktop != "xfce" {
+				t.Errorf("latest remaster system mismatch: %+v", prof.LatestRemaster.System)
+			}
+			if prof.LatestRemaster.Count != 2 {
+				t.Errorf("expected latest_remaster.count=2, got %d", prof.LatestRemaster.Count)
+			}
+		}
+		if prof.UUID == uuid2 {
+			foundP2 = true
+			if prof.RemasterCount != 1 {
+				t.Errorf("expected 1 remaster for artisan2, got %d", prof.RemasterCount)
+			}
+			if prof.Country != "DE" {
+				t.Errorf("expected country DE, got %s", prof.Country)
+			}
+			if prof.LatestRemaster == nil || prof.LatestRemaster.Distro.ID != "arch" {
+				t.Errorf("expected arch distro in latest_remaster: %+v", prof.LatestRemaster)
+			}
+		}
+		if prof.UUID == uuidDisabled {
+			t.Errorf("disabled profile should NOT be in active list")
+		}
+	}
+	if !foundP1 || !foundP2 {
+		t.Fatalf("did not find both expected profiles")
+	}
+
+	// 4. Test HTML view: GET /api/community?format=html and Accept: text/html
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/community?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	if wHTML.Code != http.StatusOK {
+		t.Fatalf("expected 200 on HTML, got %d: %s", wHTML.Code, wHTML.Body.String())
+	}
+	htmlBody := wHTML.Body.String()
+	for _, expected := range []string{
+		"🐧 Penguins Community &amp; Distro Artisans",
+		"@artisan1",
+		"Roma, IT",
+		"Distro artisan building Debian remixes",
+		"debian trixie (13) • amd64 • xfce",
+		"https://github.com/artisan1/distro",
+		"rel=\"noopener noreferrer\"",
+		"@artisan2",
+		"Berlin, DE",
+		"arch rolling • x86_64 • kde",
+		"https://gitlab.com/artisan2/arch-distro",
+	} {
+		if !strings.Contains(htmlBody, expected) {
+			t.Errorf("expected community HTML to contain %q", expected)
+		}
+	}
+	if strings.Contains(htmlBody, "hidden_artisan") {
+		t.Errorf("disabled profile should NOT be rendered in community HTML")
+	}
+
+	// 5. Test TXT view: GET /api/community?format=txt
+	reqTXT := httptest.NewRequest(http.MethodGet, "/api/community?format=txt", nil)
+	wTXT := httptest.NewRecorder()
+	srv.ServeHTTP(wTXT, reqTXT)
+	if wTXT.Code != http.StatusOK {
+		t.Fatalf("expected 200 on TXT, got %d", wTXT.Code)
+	}
+	txtBody := wTXT.Body.String()
+	for _, expected := range []string{
+		"# 🐧 Penguins Community & Distro Artisans",
+		"Nickname",
+		"Location",
+		"Ultima Distro",
+		"Source URL",
+		"Contatti",
+		"@artisan1",
+		"debian trixie (13) • amd64 • xfce",
+		"@artisan2",
+		"arch rolling • x86_64 • kde",
+	} {
+		if !strings.Contains(txtBody, expected) {
+			t.Errorf("expected community TXT to contain %q", expected)
+		}
+	}
+
+	// 6. Test Dashboard integration: GET /api/census?format=html
+	reqCensus := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
+	wCensus := httptest.NewRecorder()
+	srv.ServeHTTP(wCensus, reqCensus)
+	if wCensus.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /api/census HTML, got %d", wCensus.Code)
+	}
+	censusHTML := wCensus.Body.String()
+
+	// Verify "🐧 Penguins Community Artisans" section exists with link to /api/community
+	if !strings.Contains(censusHTML, "🐧 Penguins Community Artisans") {
+		t.Errorf("expected census HTML to contain '🐧 Penguins Community Artisans'")
+	}
+	if !strings.Contains(censusHTML, `id="community-artisans"`) {
+		t.Errorf("expected census HTML to have panel id=\"community-artisans\"")
+	}
+	if !strings.Contains(censusHTML, `/api/community`) {
+		t.Errorf("expected census HTML to link to /api/community")
+	}
+
+	// Verify Recent Events table:
+	// Events from artisan1 should have clickable @artisan1 badge
+	if !strings.Contains(censusHTML, `class="artisan-badge"`) || !strings.Contains(censusHTML, `@artisan1`) {
+		t.Errorf("expected recent events table to have @artisan1 badge")
+	}
+	// Anonymous events (uuidAnon) must NOT display any badge or nickname
+	if strings.Contains(censusHTML, uuidAnon) {
+		t.Errorf("anonymous events must NOT display uuid")
+	}
+
+	// 7. PRIVACY CHECK: Verify census.jsonl file on disk was NEVER modified
+	currentCensusBytes, err := os.ReadFile(dataFile)
+	if err != nil {
+		t.Fatalf("failed to re-read census file: %v", err)
+	}
+	if !bytes.Equal(originalCensusBytes, currentCensusBytes) {
+		t.Fatalf("census.jsonl su disco must NEVER be modified! Bytes differ.")
+	}
+}
+
+func TestCommunityXSSAndURLSanitization(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	srv.SetCommunityDir(commDir)
+
+	uuid := "55555555-5555-5555-5555-555555555555"
+
+	// Malicious payload with potential XSS in text fields and javascript: URLs
+	payload := `{
+		"uuid": "` + uuid + `",
+		"nickname": "<script>alert('xss-nick')</script>",
+		"location": "<img src=x onerror=alert('xss-loc')>",
+		"bio": "<b onmouseover=\"alert('xss-bio')\">Malicious Bio</b>",
+		"contact": "javascript:alert('xss-contact')",
+		"source_url": "javascript:alert('xss-source')",
+		"socials": {
+			"github": "javascript:alert('xss-gh')",
+			"custom": "data:text/html,<script>alert(1)</script>"
+		},
+		"enabled": true
+	}`
+
+	req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("failed to save profile: %s", w.Body.String())
+	}
+
+	// Request HTML
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/community?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	if wHTML.Code != http.StatusOK {
+		t.Fatalf("expected 200 on HTML, got %d", wHTML.Code)
+	}
+
+	htmlBody := wHTML.Body.String()
+
+	// Verify unescaped scripts / tags are NOT present
+	if strings.Contains(htmlBody, "<script>alert('xss-nick')</script>") {
+		t.Errorf("raw unescaped script tag found in HTML")
+	}
+	if strings.Contains(htmlBody, "<img src=x") {
+		t.Errorf("raw unescaped img tag found in HTML")
+	}
+	if strings.Contains(htmlBody, "<b onmouseover=") {
+		t.Errorf("raw unescaped b tag with onmouseover found in HTML")
+	}
+
+	// Verify properly escaped HTML entities ARE present
+	if !strings.Contains(htmlBody, "&lt;script&gt;alert(&#39;xss-nick&#39;)&lt;/script&gt;") && !strings.Contains(htmlBody, "&lt;script&gt;alert('xss-nick')&lt;/script&gt;") {
+		t.Errorf("escaped script was not found as expected")
+	}
+
+	// Verify javascript: or data: was NEVER put in href attribute
+	if strings.Contains(htmlBody, `href="javascript:`) || strings.Contains(htmlBody, `href='javascript:`) {
+		t.Errorf("unsafe javascript: URI found in href attribute!")
+	}
+	if strings.Contains(htmlBody, `href="data:`) || strings.Contains(htmlBody, `href='data:`) {
+		t.Errorf("unsafe data: URI found in href attribute!")
+	}
+}
+

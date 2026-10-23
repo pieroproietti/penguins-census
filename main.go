@@ -62,6 +62,37 @@ type CommunityProfile struct {
 	UpdatedAt string            `json:"updated_at,omitempty"`
 }
 
+type ArtisanRemasterInfo struct {
+	Distro         DistroInfo `json:"distro"`
+	System         SystemInfo `json:"system"`
+	Country        string     `json:"country,omitempty"`
+	Timestamp      string     `json:"timestamp,omitempty"`
+	LastRemasterAt string     `json:"last_remaster_at,omitempty"`
+	Count          int        `json:"count"`
+}
+
+type ArtisanProfile struct {
+	UUID           string               `json:"uuid"`
+	Nickname       string               `json:"nickname,omitempty"`
+	Location       string               `json:"location,omitempty"`
+	Bio            string               `json:"bio,omitempty"`
+	Contact        string               `json:"contact,omitempty"`
+	Socials        map[string]string    `json:"socials,omitempty"`
+	SourceURL      string               `json:"source_url,omitempty"`
+	Enabled        *bool                `json:"enabled,omitempty"`
+	UpdatedAt      string               `json:"updated_at,omitempty"`
+	Country        string               `json:"country,omitempty"`
+	LastRemasterAt string               `json:"last_remaster_at,omitempty"`
+	RemasterCount  int                  `json:"remaster_count,omitempty"`
+	LatestRemaster *ArtisanRemasterInfo `json:"latest_remaster,omitempty"`
+}
+
+type SocialLink struct {
+	Platform string
+	Label    string
+	URL      string
+}
+
 type rawCommunityPayload struct {
 	UUID          string               `json:"uuid"`
 	Nickname      string               `json:"nickname"`
@@ -92,13 +123,15 @@ type CensusRecord struct {
 }
 
 type RecentEvent struct {
-	Date          string `json:"date"`
-	Country       string `json:"country"`
-	Distro        string `json:"distro"`
-	Desktop       string `json:"desktop"`
-	DisplayServer string `json:"display_server"`
-	Remaster      bool   `json:"remaster"`
-	Sysinstall    bool   `json:"sysinstall"`
+	Date            string `json:"date"`
+	Country         string `json:"country"`
+	Distro          string `json:"distro"`
+	Desktop         string `json:"desktop"`
+	DisplayServer   string `json:"display_server"`
+	Remaster        bool   `json:"remaster"`
+	Sysinstall      bool   `json:"sysinstall"`
+	ArtisanNickname string `json:"artisan_nickname,omitempty"`
+	ArtisanURL      string `json:"artisan_url,omitempty"`
 }
 
 type TopInstallation struct {
@@ -140,6 +173,7 @@ type CensusSummary struct {
 	CoexistCount     int                  `json:"coexist_count"`
 	RecentEvents     []RecentEvent        `json:"recent_events"`
 	TopInstallations []TopInstallation    `json:"top_installations"`
+	Artisans         []ArtisanProfile     `json:"artisans,omitempty"`
 	RepoClients      *RepoAnalysisSummary `json:"repo_clients,omitempty"`
 	ByAction         map[string]int       `json:"by_action"`
 	ByDistro         map[string]int       `json:"by_distro"`
@@ -277,7 +311,8 @@ func (s *CensusServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Path == "/api/community" || strings.HasPrefix(r.URL.Path, "/api/community/") {
+	if r.URL.Path == "/api/community" || strings.HasPrefix(r.URL.Path, "/api/community/") ||
+		r.URL.Path == "/community" || strings.HasPrefix(r.URL.Path, "/community/") {
 		s.handleCommunity(w, r)
 		return
 	}
@@ -471,6 +506,7 @@ func (s *CensusServer) deleteCommunityProfile(uuid string) error {
 
 func (s *CensusServer) handleCommunity(w http.ResponseWriter, r *http.Request) {
 	subpath := strings.TrimPrefix(r.URL.Path, "/api/community")
+	subpath = strings.TrimPrefix(subpath, "/community")
 	subpath = strings.TrimPrefix(subpath, "/")
 	subpath = strings.TrimSuffix(subpath, "/")
 	subpath = strings.TrimSuffix(subpath, ".json")
@@ -651,6 +687,11 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		}
 	}
 
+	defaultEnabled := true
+	if raw.Enabled != nil {
+		defaultEnabled = *raw.Enabled
+	}
+
 	profile := CommunityProfile{
 		UUID:      finalUUID,
 		Nickname:  strings.TrimSpace(raw.Nickname),
@@ -659,7 +700,7 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		Contact:   contact,
 		Socials:   socials,
 		SourceURL: sourceURL,
-		Enabled:   raw.Enabled,
+		Enabled:   &defaultEnabled,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -686,6 +727,7 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
 	s.mu.Lock()
 	profile, err := s.getCommunityProfile(uuid)
+	dataPath := s.dataPath
 	s.mu.Unlock()
 
 	if err != nil {
@@ -695,7 +737,9 @@ func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.
 		return
 	}
 
-	resp, err := json.MarshalIndent(profile, "", "  ")
+	enriched := s.enrichSingleProfile(*profile, dataPath)
+
+	resp, err := json.MarshalIndent(enriched, "", "  ")
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -710,35 +754,38 @@ func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.
 
 func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	profiles, err := s.listCommunityProfiles()
+	dataPath := s.dataPath
+	commDir := s.getCommunityDir()
 	s.mu.Unlock()
 
-	if err != nil {
+	artisans, err := loadEnrichedArtisans(dataPath, commDir)
+	if err != nil && !os.IsNotExist(err) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"failed to list community profiles"}`))
 		return
 	}
 
-	type listResponse struct {
-		Total    int                `json:"total"`
-		Profiles []CommunityProfile `json:"profiles"`
+	format := negotiateFormat(r)
+	switch format {
+	case "html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(renderCommunityHTML(artisans)))
+	case "txt":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(renderCommunityText(artisans)))
+	default:
+		type listResponse struct {
+			Total    int              `json:"total"`
+			Profiles []ArtisanProfile `json:"profiles"`
+		}
+		writePrettyJSON(w, listResponse{
+			Total:    len(artisans),
+			Profiles: artisans,
+		})
 	}
-
-	resp, err := json.MarshalIndent(listResponse{
-		Total:    len(profiles),
-		Profiles: profiles,
-	}, "", "  ")
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"error":"failed to serialize profiles"}`))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp)
 }
 
 func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
@@ -830,7 +877,448 @@ func scanSingleLogFile(filePath string, handleLine func(line []byte)) error {
 	return scanner.Err()
 }
 
-func loadCensusSummary(dataPath string) (CensusSummary, error) {
+func isCommunityProfileEnabled(p CommunityProfile) bool {
+	if p.Enabled == nil {
+		return true
+	}
+	return *p.Enabled
+}
+
+func parseFlexibleTimestamp(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
+		return t
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+func countryToFlag(countryCode string) string {
+	countryCode = strings.ToUpper(strings.TrimSpace(countryCode))
+	if countryCode == "XX" || countryCode == "" {
+		return ""
+	}
+	if len(countryCode) == 2 && countryCode[0] >= 'A' && countryCode[0] <= 'Z' && countryCode[1] >= 'A' && countryCode[1] <= 'Z' {
+		r1 := rune(0x1F1E6 + int(countryCode[0]-'A'))
+		r2 := rune(0x1F1E6 + int(countryCode[1]-'A'))
+		return string([]rune{r1, r2})
+	}
+	return ""
+}
+
+func isSafeURL(u string) bool {
+	u = strings.TrimSpace(u)
+	lower := strings.ToLower(u)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func formatDistroBadge(distro DistroInfo, sys SystemInfo) string {
+	id := strings.TrimSpace(distro.ID)
+	codename := strings.TrimSpace(distro.Codename)
+	release := strings.TrimSpace(distro.Release)
+	arch := strings.TrimSpace(sys.Arch)
+	desktop := strings.TrimSpace(sys.Desktop)
+
+	if id == "" {
+		id = "linux"
+	}
+
+	var versionParts []string
+	if codename != "" && release != "" {
+		if strings.EqualFold(codename, release) {
+			versionParts = append(versionParts, codename)
+		} else {
+			versionParts = append(versionParts, fmt.Sprintf("%s (%s)", codename, release))
+		}
+	} else if codename != "" {
+		versionParts = append(versionParts, codename)
+	} else if release != "" {
+		versionParts = append(versionParts, release)
+	}
+
+	distroStr := id
+	if len(versionParts) > 0 {
+		distroStr += " " + strings.Join(versionParts, " ")
+	}
+
+	var parts []string
+	parts = append(parts, distroStr)
+
+	if arch != "" {
+		parts = append(parts, arch)
+	}
+	if desktop != "" {
+		parts = append(parts, desktop)
+	} else {
+		parts = append(parts, "headless/cli")
+	}
+
+	return strings.Join(parts, " • ")
+}
+
+func buildSocialLinks(socials map[string]string, contact string) []SocialLink {
+	var links []SocialLink
+	seenURLs := make(map[string]bool)
+
+	keys := make([]string, 0, len(socials))
+	for k := range socials {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		val := strings.TrimSpace(socials[k])
+		if val == "" {
+			continue
+		}
+		platform := strings.ToLower(strings.TrimSpace(k))
+		var url string
+		var label string
+
+		switch platform {
+		case "github":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				handle := strings.TrimPrefix(val, "@")
+				url = "https://github.com/" + handle
+			}
+			label = "GitHub"
+		case "gitlab":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				handle := strings.TrimPrefix(val, "@")
+				url = "https://gitlab.com/" + handle
+			}
+			label = "GitLab"
+		case "telegram", "tg":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				handle := strings.TrimPrefix(val, "@")
+				url = "https://t.me/" + handle
+			}
+			label = "Telegram"
+		case "mastodon":
+			if isSafeURL(val) {
+				url = val
+			} else if strings.HasPrefix(val, "@") && strings.Contains(val[1:], "@") {
+				parts := strings.Split(val[1:], "@")
+				url = "https://" + parts[1] + "/@" + parts[0]
+			}
+			label = "Mastodon"
+		case "twitter", "x":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				handle := strings.TrimPrefix(val, "@")
+				url = "https://x.com/" + handle
+			}
+			label = "X (Twitter)"
+		case "matrix":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				url = "https://matrix.to/#/" + val
+			}
+			label = "Matrix"
+		case "sourceforge":
+			if isSafeURL(val) {
+				url = val
+			} else {
+				url = "https://sourceforge.net/projects/" + val
+			}
+			label = "SourceForge"
+		default:
+			if isSafeURL(val) {
+				url = val
+				label = strings.Title(platform)
+			}
+		}
+
+		if url != "" && isSafeURL(url) && !seenURLs[url] {
+			seenURLs[url] = true
+			links = append(links, SocialLink{
+				Platform: platform,
+				Label:    label,
+				URL:      url,
+			})
+		}
+	}
+
+	contact = strings.TrimSpace(contact)
+	if contact != "" {
+		if isSafeURL(contact) && !seenURLs[contact] {
+			seenURLs[contact] = true
+			links = append(links, SocialLink{
+				Platform: "contact",
+				Label:    "Contact",
+				URL:      contact,
+			})
+		} else if strings.HasPrefix(contact, "@") && !strings.Contains(contact[1:], "@") {
+			tgURL := "https://t.me/" + strings.TrimPrefix(contact, "@")
+			if !seenURLs[tgURL] {
+				seenURLs[tgURL] = true
+				links = append(links, SocialLink{
+					Platform: "telegram",
+					Label:    "Telegram (" + contact + ")",
+					URL:      tgURL,
+				})
+			}
+		}
+	}
+
+	return links
+}
+
+func getArtisanActivityTime(a *ArtisanProfile) time.Time {
+	tUp := parseFlexibleTimestamp(a.UpdatedAt)
+	tRem := parseFlexibleTimestamp(a.LastRemasterAt)
+	if tRem.After(tUp) {
+		return tRem
+	}
+	return tUp
+}
+
+func sortArtisansByActivity(artisans []ArtisanProfile) {
+	sort.Slice(artisans, func(i, j int) bool {
+		ti := getArtisanActivityTime(&artisans[i])
+		tj := getArtisanActivityTime(&artisans[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		if artisans[i].Nickname != artisans[j].Nickname {
+			return artisans[i].Nickname < artisans[j].Nickname
+		}
+		return artisans[i].UUID < artisans[j].UUID
+	})
+}
+
+func (s *CensusServer) enrichSingleProfile(profile CommunityProfile, dataPath string) ArtisanProfile {
+	artisan := ArtisanProfile{
+		UUID:      profile.UUID,
+		Nickname:  profile.Nickname,
+		Location:  profile.Location,
+		Bio:       profile.Bio,
+		Contact:   profile.Contact,
+		Socials:   profile.Socials,
+		SourceURL: profile.SourceURL,
+		Enabled:   profile.Enabled,
+		UpdatedAt: profile.UpdatedAt,
+	}
+
+	if dataPath == "" {
+		return artisan
+	}
+
+	_ = forEachLogLine(dataPath, func(line []byte) {
+		var rec CensusRecord
+		if err := json.Unmarshal(line, &rec); err != nil {
+			return
+		}
+		if strings.TrimSpace(rec.UUID) != profile.UUID {
+			return
+		}
+
+		if rec.Country != "" {
+			artisan.Country = strings.TrimSpace(rec.Country)
+		}
+
+		if rec.Action == "remaster" {
+			artisan.RemasterCount++
+			tRec := parseFlexibleTimestamp(rec.Timestamp)
+			tOld := parseFlexibleTimestamp(artisan.LastRemasterAt)
+			isNewer := false
+			if artisan.LastRemasterAt == "" {
+				isNewer = true
+			} else if !tRec.IsZero() && !tOld.IsZero() {
+				isNewer = tRec.After(tOld) || tRec.Equal(tOld)
+			} else {
+				isNewer = rec.Timestamp >= artisan.LastRemasterAt
+			}
+
+			if isNewer {
+				artisan.LastRemasterAt = rec.Timestamp
+				if rec.Country != "" {
+					artisan.Country = strings.TrimSpace(rec.Country)
+				}
+				artisan.LatestRemaster = &ArtisanRemasterInfo{
+					Distro:         rec.Distro,
+					System:         rec.System,
+					Country:        artisan.Country,
+					Timestamp:      rec.Timestamp,
+					LastRemasterAt: rec.Timestamp,
+					Count:          artisan.RemasterCount,
+				}
+			}
+		}
+	})
+
+	if artisan.LatestRemaster != nil {
+		artisan.LatestRemaster.Count = artisan.RemasterCount
+	}
+
+	return artisan
+}
+
+func loadEnrichedArtisans(dataPath, commDir string) ([]ArtisanProfile, error) {
+	if commDir == "" {
+		return []ArtisanProfile{}, nil
+	}
+
+	entries, err := os.ReadDir(commDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []ArtisanProfile{}, nil
+		}
+		return nil, err
+	}
+
+	artisanMap := make(map[string]*ArtisanProfile)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(commDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var p CommunityProfile
+		if err := json.Unmarshal(data, &p); err != nil || p.UUID == "" {
+			continue
+		}
+		if !isCommunityProfileEnabled(p) {
+			continue
+		}
+
+		artisanMap[p.UUID] = &ArtisanProfile{
+			UUID:      p.UUID,
+			Nickname:  p.Nickname,
+			Location:  p.Location,
+			Bio:       p.Bio,
+			Contact:   p.Contact,
+			Socials:   p.Socials,
+			SourceURL: p.SourceURL,
+			Enabled:   p.Enabled,
+			UpdatedAt: p.UpdatedAt,
+		}
+	}
+
+	if len(artisanMap) == 0 {
+		return []ArtisanProfile{}, nil
+	}
+
+	if dataPath != "" {
+		_ = forEachLogLine(dataPath, func(line []byte) {
+			var rec CensusRecord
+			if err := json.Unmarshal(line, &rec); err != nil {
+				return
+			}
+			uuid := strings.TrimSpace(rec.UUID)
+			if uuid == "" {
+				return
+			}
+			artisan, exists := artisanMap[uuid]
+			if !exists {
+				return
+			}
+
+			if rec.Country != "" {
+				artisan.Country = strings.TrimSpace(rec.Country)
+			}
+
+			if rec.Action == "remaster" {
+				artisan.RemasterCount++
+				tRec := parseFlexibleTimestamp(rec.Timestamp)
+				tOld := parseFlexibleTimestamp(artisan.LastRemasterAt)
+				isNewer := false
+				if artisan.LastRemasterAt == "" {
+					isNewer = true
+				} else if !tRec.IsZero() && !tOld.IsZero() {
+					isNewer = tRec.After(tOld) || tRec.Equal(tOld)
+				} else {
+					isNewer = rec.Timestamp >= artisan.LastRemasterAt
+				}
+
+				if isNewer {
+					artisan.LastRemasterAt = rec.Timestamp
+					if rec.Country != "" {
+						artisan.Country = strings.TrimSpace(rec.Country)
+					}
+					artisan.LatestRemaster = &ArtisanRemasterInfo{
+						Distro:         rec.Distro,
+						System:         rec.System,
+						Country:        artisan.Country,
+						Timestamp:      rec.Timestamp,
+						LastRemasterAt: rec.Timestamp,
+						Count:          artisan.RemasterCount,
+					}
+				}
+			}
+		})
+
+		for _, a := range artisanMap {
+			if a.LatestRemaster != nil {
+				a.LatestRemaster.Count = a.RemasterCount
+			}
+		}
+	}
+
+	artisans := make([]ArtisanProfile, 0, len(artisanMap))
+	for _, a := range artisanMap {
+		artisans = append(artisans, *a)
+	}
+
+	sortArtisansByActivity(artisans)
+	return artisans, nil
+}
+
+func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, error) {
+	var commDir string
+	if len(commDirs) > 0 && commDirs[0] != "" {
+		commDir = commDirs[0]
+	} else if dataPath != "" {
+		fi, err := os.Stat(dataPath)
+		if err == nil && fi.IsDir() {
+			commDir = filepath.Join(dataPath, "community")
+		} else {
+			commDir = filepath.Join(filepath.Dir(dataPath), "community")
+		}
+	} else {
+		commDir = "/var/lib/penguins-census/community"
+	}
+
+	activeArtisansMap := make(map[string]CommunityProfile)
+	if commDir != "" {
+		if entries, err := os.ReadDir(commDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), ".tmp") {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(commDir, entry.Name()))
+				if err != nil {
+					continue
+				}
+				var p CommunityProfile
+				if err := json.Unmarshal(data, &p); err == nil && p.UUID != "" && isCommunityProfileEnabled(p) {
+					activeArtisansMap[p.UUID] = p
+				}
+			}
+		}
+	}
+
 	summary := CensusSummary{
 		RecentEvents:     make([]RecentEvent, 0),
 		TopInstallations: make([]TopInstallation, 0),
@@ -935,7 +1423,7 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		if displayServer == "" {
 			displayServer = "headless/cli"
 		}
-		summary.RecentEvents = append(summary.RecentEvents, RecentEvent{
+		ev := RecentEvent{
 			Date:          formatEventDate(r.Timestamp),
 			Country:       country,
 			Distro:        distro,
@@ -943,7 +1431,17 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 			DisplayServer: displayServer,
 			Remaster:      r.Action == "remaster",
 			Sysinstall:    r.Action == "sysinstall",
-		})
+		}
+		recUUID := strings.TrimSpace(r.UUID)
+		if artisan, ok := activeArtisansMap[recUUID]; ok {
+			ev.ArtisanNickname = artisan.Nickname
+			if isSafeURL(artisan.SourceURL) {
+				ev.ArtisanURL = artisan.SourceURL
+			} else {
+				ev.ArtisanURL = "/api/community"
+			}
+		}
+		summary.RecentEvents = append(summary.RecentEvents, ev)
 	}
 
 	summary.UniqueMachines = len(uniqueUUIDs)
@@ -1046,12 +1544,18 @@ func loadCensusSummary(dataPath string) (CensusSummary, error) {
 		summary.RepoClients = rStats
 	}
 
+	if commDir != "" {
+		if artisans, err := loadEnrichedArtisans(dataPath, commDir); err == nil {
+			summary.Artisans = artisans
+		}
+	}
+
 	return summary, nil
 }
 
 func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	summary, err := loadCensusSummary(s.dataPath)
+	summary, err := loadCensusSummary(s.dataPath, s.getCommunityDir())
 	s.mu.Unlock()
 
 	if err != nil && !os.IsNotExist(err) {
@@ -1386,10 +1890,106 @@ func writeHTMLRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 			if date == "" {
 				date = `<span class="muted">&mdash;</span>`
 			}
+			distroCell := html.EscapeString(e.Distro)
+			if e.ArtisanNickname != "" {
+				nick := e.ArtisanNickname
+				if !strings.HasPrefix(nick, "@") {
+					nick = "@" + nick
+				}
+				artisanURL := e.ArtisanURL
+				if !isSafeURL(artisanURL) {
+					artisanURL = "/api/community"
+				}
+				distroCell += fmt.Sprintf(` <a href="%s" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">%s</a>`, html.EscapeString(artisanURL), html.EscapeString(nick))
+			}
 			fmt.Fprintf(buf, `        <tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td class="center">%s</td><td class="center">%s</td></tr>
-`, date, html.EscapeString(e.Country), html.EscapeString(e.Distro), html.EscapeString(e.Desktop), html.EscapeString(e.DisplayServer), rem, sys)
+`, date, html.EscapeString(e.Country), distroCell, html.EscapeString(e.Desktop), html.EscapeString(e.DisplayServer), rem, sys)
 		}
 	}
+	buf.WriteString(`      </tbody>
+    </table>
+  </section>
+`)
+}
+
+func writeHTMLCommunityArtisans(buf *bytes.Buffer, artisans []ArtisanProfile) {
+	buf.WriteString(`  <section class="panel" id="community-artisans">
+    <span id="community" class="anchor-alias"></span>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
+      <h2 style="margin:0;"><a href="/api/community" class="anchor-link">🐧 Penguins Community Artisans</a></h2>
+      <a class="btn" href="/api/community">View Showcase &rarr;</a>
+    </div>
+`)
+	if len(artisans) == 0 {
+		buf.WriteString(`    <div class="empty">No community artisans registered yet &bull; <a href="/api/community" style="color:var(--accent);">Join Penguins Community</a></div>
+  </section>
+`)
+		return
+	}
+
+	buf.WriteString(`    <table>
+      <thead>
+        <tr>
+          <th>Artisan</th>
+          <th>Location</th>
+          <th>Latest ISO</th>
+          <th class="num">Remasters</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+`)
+	for _, a := range artisans {
+		nick := strings.TrimSpace(a.Nickname)
+		if nick == "" {
+			nick = "artisan"
+		}
+		if !strings.HasPrefix(nick, "@") {
+			nick = "@" + nick
+		}
+
+		country := strings.ToUpper(strings.TrimSpace(a.Country))
+		flag := countryToFlag(country)
+		loc := strings.TrimSpace(a.Location)
+		locDisplay := ""
+		if loc != "" && flag != "" {
+			locDisplay = fmt.Sprintf("%s %s", html.EscapeString(loc), flag)
+		} else if loc != "" {
+			locDisplay = html.EscapeString(loc)
+		} else if flag != "" {
+			locDisplay = fmt.Sprintf("%s %s", flag, html.EscapeString(country))
+		} else if country != "" {
+			locDisplay = html.EscapeString(country)
+		} else {
+			locDisplay = `<span class="muted">&mdash;</span>`
+		}
+
+		isoBadge := `<span class="muted">&mdash;</span>`
+		if a.LatestRemaster != nil {
+			badgeText := formatDistroBadge(a.LatestRemaster.Distro, a.LatestRemaster.System)
+			isoBadge = fmt.Sprintf(`<span class="iso-badge" style="font-size:0.8rem; padding:0.15rem 0.45rem;">%s</span>`, html.EscapeString(badgeText))
+		}
+
+		sourceLink := `<span class="muted">&mdash;</span>`
+		if isSafeURL(a.SourceURL) {
+			sourceLink = fmt.Sprintf(`<a href="%s" target="_blank" rel="noopener noreferrer" class="btn" style="padding:0.2rem 0.5rem; font-size:0.75rem;">Source &rarr;</a>`, html.EscapeString(a.SourceURL))
+		}
+
+		artisanLink := "/api/community"
+		if isSafeURL(a.SourceURL) {
+			artisanLink = a.SourceURL
+		}
+
+		fmt.Fprintf(buf, `        <tr>
+          <td><a href="%s" target="_blank" rel="noopener noreferrer" style="color:var(--accent); font-weight:600; text-decoration:none;">%s</a></td>
+          <td>%s</td>
+          <td>%s</td>
+          <td class="num">%d</td>
+          <td>%s</td>
+        </tr>
+`, html.EscapeString(artisanLink), html.EscapeString(nick), locDisplay, isoBadge, a.RemasterCount, sourceLink)
+	}
+
 	buf.WriteString(`      </tbody>
     </table>
   </section>
@@ -1585,6 +2185,35 @@ th {
   height: 100%;
   background: var(--accent);
 }
+.artisan-badge {
+  display: inline-block;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  padding: 0.15rem 0.45rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-decoration: none;
+  margin-left: 0.4rem;
+  transition: all 0.2s;
+  vertical-align: middle;
+}
+.artisan-badge:hover {
+  background: var(--accent);
+  color: #0f172a;
+}
+.iso-badge {
+  display: inline-block;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: monospace;
+  font-weight: 600;
+}
 </style>
 </head>
 <body>
@@ -1595,6 +2224,7 @@ th {
       <div class="subtitle">Since 22 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
     </div>
     <div class="links">
+      <a class="btn" href="/api/community">🐧 Distro Artisans</a>
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
       <a class="btn" href="https://penguins-eggs.net/access/" target="_blank" rel="noopener">Site</a>
       <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
@@ -1630,6 +2260,7 @@ th {
 	buf.WriteString(`  </div>
 `)
 
+	writeHTMLCommunityArtisans(&buf, s.Artisans)
 	writeHTMLTopInstallations(&buf, s.TopInstallations)
 	writeHTMLRecentEvents(&buf, s.RecentEvents)
 
@@ -1709,6 +2340,517 @@ func writeHTMLTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
     </table>
   </section>
 `)
+}
+
+func pluralRemasters(count int) string {
+	if count == 1 {
+		return "build"
+	}
+	return "builds"
+}
+
+func locDisplayHTML(locDisplay string) string {
+	if locDisplay == "" {
+		return ""
+	}
+	return fmt.Sprintf(`<div class="artisan-loc">%s</div>`, locDisplay)
+}
+
+func renderCommunityHTML(artisans []ArtisanProfile) string {
+	var buf bytes.Buffer
+
+	totalRemasters := 0
+	countriesMap := make(map[string]bool)
+	for _, a := range artisans {
+		totalRemasters += a.RemasterCount
+		c := strings.ToUpper(strings.TrimSpace(a.Country))
+		if c != "" && c != "XX" {
+			countriesMap[c] = true
+		}
+	}
+
+	buf.WriteString(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🐧 Penguins Community &amp; Distro Artisans</title>
+<style>
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --border: #334155;
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-bg: rgba(56, 189, 248, 0.16);
+  --tag-bg: #334155;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  padding: 2rem 1rem;
+}
+.container {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+}
+h1 {
+  margin: 0;
+  font-size: 1.65rem;
+}
+.subtitle {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+.links {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.85rem;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-primary {
+  background: var(--accent);
+  color: #0f172a;
+  font-weight: 600;
+  border-color: var(--accent);
+}
+.btn-primary:hover {
+  background: #7dd3fc;
+  color: #0f172a;
+  border-color: #7dd3fc;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.75rem;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.card:hover {
+  border-color: var(--accent);
+}
+.card-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.card-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin-top: 0.2rem;
+}
+.artisans-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 2rem;
+}
+.artisan-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s ease-out;
+}
+.artisan-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+.card-top {
+  margin-bottom: 0.75rem;
+}
+.card-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+.artisan-nick {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0;
+  word-break: break-all;
+}
+.country-badge {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.artisan-loc {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.6rem;
+}
+.bio {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  margin: 0.5rem 0 1rem 0;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.iso-box {
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+.iso-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.iso-badge {
+  display: inline-block;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  padding: 0.25rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-family: monospace;
+  font-weight: 600;
+  word-break: break-all;
+}
+.iso-meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 0.4rem;
+}
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.social-badge {
+  display: inline-flex;
+  align-items: center;
+  background: var(--tag-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+.social-badge:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 3rem 1rem;
+  font-size: 1.05rem;
+  grid-column: 1 / -1;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>🐧 Penguins Community &amp; Distro Artisans</h1>
+      <div class="subtitle">Showcase of independent Linux distributions and distro artisans building with Penguins Eggs</div>
+    </div>
+    <div class="links">
+      <a class="btn" href="/api/census">📊 Telemetry Dashboard</a>
+      <a class="btn" href="?format=txt">Terminal / Plain Text</a>
+      <a class="btn" href="?format=json">Raw JSON</a>
+      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener noreferrer">Eggs Home</a>
+      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener noreferrer">Eggs Repo</a>
+    </div>
+  </header>
+`)
+
+	fmt.Fprintf(&buf, `  <div class="cards">
+    <div class="card"><div class="card-label">Distro Artisans</div><div class="card-value">%d</div></div>
+    <div class="card"><div class="card-label">Remaster ISOs Built</div><div class="card-value">%d</div></div>
+    <div class="card"><div class="card-label">Countries Represented</div><div class="card-value">%d</div></div>
+  </div>
+
+  <div class="artisans-grid">
+`, len(artisans), totalRemasters, len(countriesMap))
+
+	if len(artisans) == 0 {
+		buf.WriteString(`    <div class="empty">No community artisans registered yet &bull; Register your profile to join the showcase!</div>
+`)
+	} else {
+		for _, a := range artisans {
+			nick := strings.TrimSpace(a.Nickname)
+			if nick == "" {
+				nick = a.UUID
+				if len(nick) > 8 {
+					nick = nick[:8]
+				}
+			}
+			if !strings.HasPrefix(nick, "@") {
+				nick = "@" + nick
+			}
+
+			country := strings.ToUpper(strings.TrimSpace(a.Country))
+			flag := countryToFlag(country)
+
+			loc := strings.TrimSpace(a.Location)
+			locDisplay := ""
+			if loc != "" && flag != "" {
+				locDisplay = fmt.Sprintf("📍 %s %s", html.EscapeString(loc), flag)
+			} else if loc != "" {
+				locDisplay = fmt.Sprintf("📍 %s", html.EscapeString(loc))
+			} else if flag != "" {
+				locDisplay = fmt.Sprintf("📍 %s %s", flag, html.EscapeString(country))
+			}
+
+			countryBadge := ""
+			if country != "" && country != "XX" {
+				if flag != "" {
+					countryBadge = fmt.Sprintf(`<span class="country-badge">%s %s</span>`, flag, html.EscapeString(country))
+				} else {
+					countryBadge = fmt.Sprintf(`<span class="country-badge">%s</span>`, html.EscapeString(country))
+				}
+			}
+
+			bio := strings.TrimSpace(a.Bio)
+			bioHTML := ""
+			if bio != "" {
+				bioHTML = fmt.Sprintf(`<p class="bio">%s</p>`, html.EscapeString(bio))
+			} else {
+				bioHTML = `<p class="bio" style="color:var(--muted); font-style:italic;">No bio provided.</p>`
+			}
+
+			isoBox := ""
+			if a.LatestRemaster != nil {
+				badgeText := formatDistroBadge(a.LatestRemaster.Distro, a.LatestRemaster.System)
+				dateStr := formatEventDate(a.LastRemasterAt)
+				isoBox = fmt.Sprintf(`      <div class="iso-box">
+        <div class="iso-label">
+          <span>Ultima ISO sfornata</span>
+          <span>%d %s</span>
+        </div>
+        <div class="iso-badge">%s</div>
+        <div class="iso-meta">Last build: %s</div>
+      </div>`, a.RemasterCount, pluralRemasters(a.RemasterCount), html.EscapeString(badgeText), html.EscapeString(dateStr))
+			} else {
+				isoBox = `      <div class="iso-box">
+        <div class="iso-label"><span>Ultima ISO sfornata</span></div>
+        <div class="iso-badge" style="opacity:0.6; font-size:0.8rem;">No ISO recorded yet</div>
+      </div>`
+			}
+
+			var actionBtns []string
+			if isSafeURL(a.SourceURL) {
+				actionBtns = append(actionBtns, fmt.Sprintf(`<a href="%s" class="btn btn-primary" target="_blank" rel="noopener noreferrer">🌐 Source / Project &rarr;</a>`, html.EscapeString(a.SourceURL)))
+			}
+
+			socialLinks := buildSocialLinks(a.Socials, a.Contact)
+			for _, sl := range socialLinks {
+				if isSafeURL(sl.URL) {
+					actionBtns = append(actionBtns, fmt.Sprintf(`<a href="%s" class="social-badge" target="_blank" rel="noopener noreferrer">%s</a>`, html.EscapeString(sl.URL), html.EscapeString(sl.Label)))
+				}
+			}
+
+			actionsHTML := ""
+			if len(actionBtns) > 0 {
+				actionsHTML = fmt.Sprintf(`    <div class="card-actions">
+      %s
+    </div>`, strings.Join(actionBtns, "\n      "))
+			}
+
+			fmt.Fprintf(&buf, `    <div class="artisan-card" id="artisan-%s">
+      <div class="card-top">
+        <div class="card-header-row">
+          <h2 class="artisan-nick">%s</h2>
+          %s
+        </div>
+        %s
+        %s
+      </div>
+%s
+%s
+    </div>
+`, html.EscapeString(a.UUID), html.EscapeString(nick), countryBadge, locDisplayHTML(locDisplay), bioHTML, isoBox, actionsHTML)
+		}
+	}
+
+	buf.WriteString(`  </div>
+</div>
+</body>
+</html>
+`)
+
+	return buf.String()
+}
+
+func renderCommunityText(artisans []ArtisanProfile) string {
+	var buf bytes.Buffer
+	buf.WriteString("# 🐧 Penguins Community & Distro Artisans\n\n")
+	fmt.Fprintf(&buf, "- Total Artisans: %d\n\n", len(artisans))
+
+	type tableRow struct {
+		Nickname string
+		Location string
+		Distro   string
+		Source   string
+		Contacts string
+	}
+
+	rows := make([]tableRow, 0, len(artisans))
+	for _, a := range artisans {
+		nick := strings.TrimSpace(a.Nickname)
+		if nick == "" {
+			nick = a.UUID
+			if len(nick) > 8 {
+				nick = nick[:8]
+			}
+		}
+		if !strings.HasPrefix(nick, "@") {
+			nick = "@" + nick
+		}
+
+		loc := strings.TrimSpace(a.Location)
+		country := strings.ToUpper(strings.TrimSpace(a.Country))
+		if loc != "" && country != "" && !strings.Contains(strings.ToUpper(loc), country) {
+			loc = loc + " [" + country + "]"
+		} else if loc == "" && country != "" {
+			loc = country
+		}
+		if loc == "" {
+			loc = "-"
+		}
+
+		distro := "-"
+		if a.LatestRemaster != nil {
+			distro = formatDistroBadge(a.LatestRemaster.Distro, a.LatestRemaster.System)
+		}
+
+		source := strings.TrimSpace(a.SourceURL)
+		if source == "" {
+			source = "-"
+		}
+
+		var contactParts []string
+		links := buildSocialLinks(a.Socials, a.Contact)
+		for _, l := range links {
+			contactParts = append(contactParts, fmt.Sprintf("%s:%s", l.Platform, l.URL))
+		}
+		contactStr := "-"
+		if len(contactParts) > 0 {
+			contactStr = strings.Join(contactParts, ", ")
+		} else if a.Contact != "" {
+			contactStr = a.Contact
+		}
+
+		rows = append(rows, tableRow{
+			Nickname: nick,
+			Location: loc,
+			Distro:   distro,
+			Source:   source,
+			Contacts: contactStr,
+		})
+	}
+
+	nickW := len("Nickname")
+	locW := len("Location")
+	distroW := len("Ultima Distro")
+	sourceW := len("Source URL")
+	contactW := len("Contatti")
+
+	if len(rows) == 0 {
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, "Nickname", locW, "Location", distroW, "Ultima Distro", sourceW, "Source URL", contactW, "Contatti")
+		fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|\n", strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW), strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n\n", nickW, "(no data)", locW, "-", distroW, "-", sourceW, "-", contactW, "-")
+		return buf.String()
+	}
+
+	for _, r := range rows {
+		if len(r.Nickname) > nickW {
+			nickW = len(r.Nickname)
+		}
+		if len(r.Location) > locW {
+			locW = len(r.Location)
+		}
+		if len(r.Distro) > distroW {
+			distroW = len(r.Distro)
+		}
+		if len(r.Source) > sourceW {
+			sourceW = len(r.Source)
+		}
+		if len(r.Contacts) > contactW {
+			contactW = len(r.Contacts)
+		}
+	}
+
+	fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, "Nickname", locW, "Location", distroW, "Ultima Distro", sourceW, "Source URL", contactW, "Contatti")
+	fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|\n", strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW), strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
+
+	for _, r := range rows {
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, r.Nickname, locW, r.Location, distroW, r.Distro, sourceW, r.Source, contactW, r.Contacts)
+	}
+	buf.WriteString("\n")
+
+	return buf.String()
 }
 
 func writePrettyJSON(w http.ResponseWriter, v any) {
