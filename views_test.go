@@ -138,11 +138,10 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Penguins Eggs Worldwide Usage",
 				"Since 22 October 2026",
 				"https://penguins-eggs.net",
-				"https://penguins-eggs.net/access/",
-				"https://github.com/pieroproietti/penguins-eggs",
 				"Home",
-				"Site",
-				"Repository",
+				"🐧 Artisans",
+				"Plain Text / Markdown",
+				"Raw JSON",
 				"Total Events",
 				"Unique Machines",
 				"Remasters",
@@ -386,6 +385,26 @@ func TestSortedRows(t *testing.T) {
 	}
 }
 
+func TestSortedVersionRows(t *testing.T) {
+	m := map[string]int{
+		"10.0.9":   50,
+		"10.0.50":  100,
+		"26.10.22": 5,
+		"26.10.9":  20,
+		"10.1.0":   10,
+	}
+	rows := sortedVersionRows(m, 185)
+	expectedOrder := []string{"26.10.22", "26.10.9", "10.1.0", "10.0.50", "10.0.9"}
+	if len(rows) != len(expectedOrder) {
+		t.Fatalf("expected %d rows, got %d", len(expectedOrder), len(rows))
+	}
+	for i, want := range expectedOrder {
+		if rows[i].Key != want {
+			t.Errorf("row[%d].Key = %q, want %q", i, rows[i].Key, want)
+		}
+	}
+}
+
 func TestRenderViewsEmptySummary(t *testing.T) {
 	s := CensusSummary{
 		TotalEvents:    0,
@@ -508,10 +527,10 @@ func TestRenderArtisanStatsAndCatalog(t *testing.T) {
 		ByDistro: map[string]int{"debian": 10},
 	}
 	sumHTML := renderHTMLSummary(sum)
-	if !strings.Contains(sumHTML, "masterbuilder") {
-		t.Errorf("expected HTML summary to contain artisan nickname")
+	if !strings.Contains(sumHTML, "@masterbuilder") {
+		t.Errorf("expected HTML summary top installations to contain artisan nickname @masterbuilder")
 	}
-	if !strings.Contains(sumHTML, "Machines") || !strings.Contains(sumHTML, "Installs") {
-		t.Errorf("expected HTML summary artisan table to have Machines and Installs columns")
+	if strings.Contains(sumHTML, `id="community-artisans"`) {
+		t.Errorf("expected HTML summary to not contain community-artisans table")
 	}
 }

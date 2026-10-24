@@ -378,20 +378,49 @@ func TestCommunityPutAndUrlParams(t *testing.T) {
 		t.Fatalf("expected 200 on PUT, got %d: %s", wPut.Code, wPut.Body.String())
 	}
 
-	// 2. PUT /api/community/{uuid} without UUID in body (should use path UUID)
+	var putResp map[string]string
+	if err := json.Unmarshal(wPut.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("failed to decode PUT response: %v", err)
+	}
+	token := putResp["artisan_token"]
+	if token == "" || !strings.HasPrefix(token, "egg_pat_") {
+		t.Fatalf("expected issued artisan_token in response, got %v", putResp)
+	}
+
+	// 2a. PUT without token -> 401 Unauthorized
 	payloadNoUUID := `{
 		"nickname": "updated-nick",
 		"location": "Turin, Italy",
 		"bio": "Dev",
 		"url": "https://github.com/test/repo"
 	}`
+	reqPutNoAuth := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	reqPutNoAuth.Header.Set("Content-Type", "application/json")
+	wPutNoAuth := httptest.NewRecorder()
+	srv.ServeHTTP(wPutNoAuth, reqPutNoAuth)
+	if wPutNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on PUT without token, got %d: %s", wPutNoAuth.Code, wPutNoAuth.Body.String())
+	}
+
+	// 2b. PUT with wrong token -> 403 Forbidden
+	reqPutBad := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	reqPutBad.Header.Set("Content-Type", "application/json")
+	reqPutBad.Header.Set("X-Eggs-Artisan-Token", "egg_pat_wrongtoken")
+	wPutBad := httptest.NewRecorder()
+	srv.ServeHTTP(wPutBad, reqPutBad)
+	if wPutBad.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on PUT with wrong token, got %d: %s", wPutBad.Code, wPutBad.Body.String())
+	}
+
+	// 2c. PUT with valid token -> 200 OK
 	reqPut2 := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
 	reqPut2.Header.Set("Content-Type", "application/json")
+	reqPut2.Header.Set("X-Eggs-Artisan-Token", token)
 	wPut2 := httptest.NewRecorder()
 	srv.ServeHTTP(wPut2, reqPut2)
 
 	if wPut2.Code != http.StatusOK {
-		t.Fatalf("expected 200 on PUT without body UUID, got %d: %s", wPut2.Code, wPut2.Body.String())
+		t.Fatalf("expected 200 on PUT with token, got %d: %s", wPut2.Code, wPut2.Body.String())
 	}
 
 	// Verify profile was updated
@@ -559,8 +588,35 @@ func TestCommunityDelete(t *testing.T) {
 		t.Fatalf("failed to create profile: %s", wPost.Body.String())
 	}
 
-	// DELETE profile
+	var postResp map[string]string
+	if err := json.Unmarshal(wPost.Body.Bytes(), &postResp); err != nil {
+		t.Fatalf("failed to parse POST response: %v", err)
+	}
+	token := postResp["artisan_token"]
+	if token == "" || !strings.HasPrefix(token, "egg_pat_") {
+		t.Fatalf("expected artisan_token on creation, got: %v", postResp)
+	}
+
+	// DELETE profile without token -> 401 Unauthorized
+	reqDelNoAuth := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	wDelNoAuth := httptest.NewRecorder()
+	srv.ServeHTTP(wDelNoAuth, reqDelNoAuth)
+	if wDelNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on DELETE without token, got %d", wDelNoAuth.Code)
+	}
+
+	// DELETE profile with bad token -> 403 Forbidden
+	reqDelBad := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	reqDelBad.Header.Set("X-Eggs-Artisan-Token", "egg_pat_bad")
+	wDelBad := httptest.NewRecorder()
+	srv.ServeHTTP(wDelBad, reqDelBad)
+	if wDelBad.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on DELETE with bad token, got %d", wDelBad.Code)
+	}
+
+	// DELETE profile with valid token
 	reqDel := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	reqDel.Header.Set("X-Eggs-Artisan-Token", token)
 	wDel := httptest.NewRecorder()
 	srv.ServeHTTP(wDel, reqDel)
 	if wDel.Code != http.StatusOK {
@@ -806,15 +862,12 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	}
 	censusHTML := wCensus.Body.String()
 
-	// Verify "🐧 Penguins Community Artisans" section exists with link to /api/community
-	if !strings.Contains(censusHTML, "🐧 Penguins Community Artisans") {
-		t.Errorf("expected census HTML to contain '🐧 Penguins Community Artisans'")
-	}
-	if !strings.Contains(censusHTML, `id="community-artisans"`) {
-		t.Errorf("expected census HTML to have panel id=\"community-artisans\"")
-	}
+	// Verify header link to /api/community exists and community-artisans table is not in census HTML
 	if !strings.Contains(censusHTML, `/api/community`) {
 		t.Errorf("expected census HTML to link to /api/community")
+	}
+	if strings.Contains(censusHTML, `id="community-artisans"`) {
+		t.Errorf("expected census HTML to not have panel id=\"community-artisans\"")
 	}
 
 	// Verify Recent Events table:

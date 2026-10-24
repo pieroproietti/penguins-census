@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -235,6 +236,94 @@ func sortedRows(m map[string]int, total int) []TableRow {
 	return rows
 }
 
+func tokenizeVersion(v string) []string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	var tokens []string
+	var cur strings.Builder
+	lastDigit := false
+	for i, r := range v {
+		if r == '.' || r == '-' || r == '_' || r == '+' {
+			if cur.Len() > 0 {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		isDigit := r >= '0' && r <= '9'
+		if i > 0 && cur.Len() > 0 && isDigit != lastDigit {
+			tokens = append(tokens, cur.String())
+			cur.Reset()
+		}
+		cur.WriteRune(r)
+		lastDigit = isDigit
+	}
+	if cur.Len() > 0 {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
+}
+
+func compareVersions(a, b string) int {
+	ta := tokenizeVersion(a)
+	tb := tokenizeVersion(b)
+	maxLen := len(ta)
+	if len(tb) > maxLen {
+		maxLen = len(tb)
+	}
+	for i := 0; i < maxLen; i++ {
+		if i >= len(ta) {
+			return -1
+		}
+		if i >= len(tb) {
+			return 1
+		}
+		na, errA := strconv.Atoi(ta[i])
+		nb, errB := strconv.Atoi(tb[i])
+		if errA == nil && errB == nil {
+			if na != nb {
+				if na < nb {
+					return -1
+				}
+				return 1
+			}
+		} else {
+			if ta[i] != tb[i] {
+				if ta[i] < tb[i] {
+					return -1
+				}
+				return 1
+			}
+		}
+	}
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func sortedVersionRows(m map[string]int, total int) []TableRow {
+	rows := make([]TableRow, 0, len(m))
+	for k, count := range m {
+		var pct float64
+		if total > 0 {
+			pct = (float64(count) / float64(total)) * 100.0
+		}
+		rows = append(rows, TableRow{
+			Key:     k,
+			Count:   count,
+			Percent: pct,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return compareVersions(rows[i].Key, rows[j].Key) > 0
+	})
+	return rows
+}
+
 func formatEventDate(ts string) string {
 	ts = strings.TrimSpace(ts)
 	if ts == "" {
@@ -294,6 +383,7 @@ type HTMLRecentEventItem struct {
 	ArtisanURL      template.URL
 	Desktop         string
 	DisplayServer   string
+	EggsVersion     string
 	Remaster        bool
 	Sysinstall      bool
 }
@@ -342,6 +432,8 @@ type HTMLLiveDistroItem struct {
 type HTMLArtisanCard struct {
 	ID                string
 	UUID              string
+	AuthType          string
+	IsGitHub          bool
 	Nickname          string
 	CountryBadge      string
 	LocationDisplay   string
@@ -359,12 +451,13 @@ type HTMLArtisanCard struct {
 }
 
 type HTMLCommunityView struct {
-	CSS            template.CSS
-	TotalArtisans  int
-	TotalRemasters int
-	TotalInstalls  int
-	TotalCountries int
-	Artisans       []HTMLArtisanCard
+	CSS               template.CSS
+	GitHubAuthEnabled bool
+	TotalArtisans     int
+	TotalRemasters    int
+	TotalInstalls     int
+	TotalCountries    int
+	Artisans          []HTMLArtisanCard
 }
 
 func renderHTMLSummary(s CensusSummary) string {
@@ -376,7 +469,7 @@ func renderHTMLSummary(s CensusSummary) string {
 		{ID: "virtualization", Title: "Virtualization", ColName: "Virt", Aliases: []string{"virt"}, Rows: sortedRows(s.ByVirt, s.TotalEvents)},
 		{ID: "init-system", Title: "Init System", ColName: "Init", Aliases: []string{"init"}, Rows: sortedRows(s.ByInit, s.TotalEvents)},
 		{ID: "arch", Title: "Arch", ColName: "Arch", Rows: sortedRows(s.ByArch, s.TotalEvents)},
-		{ID: "version", Title: "Version", ColName: "Version", Aliases: []string{"eggs-version"}, Rows: sortedRows(s.ByVersion, s.TotalEvents)},
+		{ID: "version", Title: "Version", ColName: "Version", Aliases: []string{"eggs-version"}, Rows: sortedVersionRows(s.ByVersion, s.TotalEvents)},
 	}
 
 	artisanItems := make([]HTMLArtisanSummaryItem, 0, len(s.Artisans))
@@ -463,6 +556,7 @@ func renderHTMLSummary(s CensusSummary) string {
 			ArtisanURL:      template.URL(artisanURL),
 			Desktop:         e.Desktop,
 			DisplayServer:   e.DisplayServer,
+			EggsVersion:     e.EggsVersion,
 			Remaster:        e.Remaster,
 			Sysinstall:      e.Sysinstall,
 		})
@@ -532,7 +626,12 @@ func renderHTMLSummary(s CensusSummary) string {
 	return buf.String()
 }
 
-func renderCommunityHTML(artisans []ArtisanProfile) string {
+func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) string {
+	ghEnabled := false
+	if len(ghAuthEnabled) > 0 {
+		ghEnabled = ghAuthEnabled[0]
+	}
+
 	totalRemasters := 0
 	totalInstalls := 0
 	countriesMap := make(map[string]bool)
@@ -610,6 +709,8 @@ func renderCommunityHTML(artisans []ArtisanProfile) string {
 		cardItems = append(cardItems, HTMLArtisanCard{
 			ID:                a.GetID(),
 			UUID:              a.UUID,
+			AuthType:          a.AuthType,
+			IsGitHub:          strings.EqualFold(a.AuthType, "github"),
 			Nickname:          nick,
 			CountryBadge:      countryBadge,
 			LocationDisplay:   locDisplay,
@@ -628,12 +729,13 @@ func renderCommunityHTML(artisans []ArtisanProfile) string {
 	}
 
 	data := HTMLCommunityView{
-		CSS:            template.CSS(embeddedCSS),
-		TotalArtisans:  len(artisans),
-		TotalRemasters: totalRemasters,
-		TotalInstalls:  totalInstalls,
-		TotalCountries: len(countriesMap),
-		Artisans:       cardItems,
+		CSS:               template.CSS(embeddedCSS),
+		GitHubAuthEnabled: ghEnabled,
+		TotalArtisans:     len(artisans),
+		TotalRemasters:    totalRemasters,
+		TotalInstalls:     totalInstalls,
+		TotalCountries:    len(countriesMap),
+		Artisans:          cardItems,
 	}
 
 	var buf bytes.Buffer

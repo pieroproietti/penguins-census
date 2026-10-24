@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net"
@@ -20,6 +21,7 @@ type CensusServer struct {
 	mmdbPath     string
 	mmdb         *maxminddb.Reader
 	communityDir string
+	githubAuth   *GitHubAuthConfig
 }
 
 func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
@@ -32,10 +34,23 @@ func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
 			commDir = filepath.Join(filepath.Dir(dataPath), "community")
 		}
 	}
+	var ghAuth *GitHubAuthConfig
+	ghClientID := strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID"))
+	ghClientSecret := strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET"))
+	if ghClientID != "" && ghClientSecret != "" {
+		ghAuth = &GitHubAuthConfig{
+			ClientID:     ghClientID,
+			ClientSecret: ghClientSecret,
+			AuthURL:      "https://github.com/login/oauth/authorize",
+			TokenURL:     "https://github.com/login/oauth/access_token",
+			UserAPIURL:   "https://api.github.com/user",
+		}
+	}
 	s := &CensusServer{
 		dataPath:     dataPath,
 		mmdbPath:     mmdbPath,
 		communityDir: commDir,
+		githubAuth:   ghAuth,
 	}
 	if mmdbPath != "" {
 		if reader, err := maxminddb.Open(mmdbPath); err == nil {
@@ -114,6 +129,11 @@ func (s *CensusServer) resolveCountry(r *http.Request) string {
 }
 
 func (s *CensusServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/auth/github" || strings.HasPrefix(r.URL.Path, "/auth/github/") {
+		s.handleGitHubAuth(w, r)
+		return
+	}
+
 	if r.URL.Path == "/api/census" {
 		switch r.Method {
 		case http.MethodPost:
@@ -168,13 +188,7 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	rec.Country = s.resolveCountry(r)
 
 	// Verify artisan token if present
-	rawToken := strings.TrimSpace(r.Header.Get("X-Eggs-Artisan-Token"))
-	if rawToken == "" {
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			rawToken = strings.TrimSpace(auth[7:])
-		}
-	}
+	rawToken := extractArtisanToken(r)
 	if rawToken != "" {
 		s.mu.Lock()
 		profile, err := s.findProfileByToken(rawToken)
@@ -213,6 +227,18 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
+
+func extractArtisanToken(r *http.Request) string {
+	rawToken := strings.TrimSpace(r.Header.Get("X-Eggs-Artisan-Token"))
+	if rawToken != "" {
+		return rawToken
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		return strings.TrimSpace(auth[7:])
+	}
+	return ""
+}
 
 func isValidUUID(u string) bool {
 	u = strings.TrimSpace(u)
@@ -284,6 +310,16 @@ func (s *CensusServer) handleCommunity(w http.ResponseWriter, r *http.Request) {
 			s.handleListCommunityProfiles(w, r)
 		default:
 			w.Header().Set("Allow", "GET, POST, PUT")
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	if subpath == "me" {
+		if r.Method == http.MethodGet {
+			s.handleCommunityMe(w, r)
+		} else {
+			w.Header().Set("Allow", "GET")
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		}
 		return
@@ -485,16 +521,68 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		defaultEnabled = *raw.Enabled
 	}
 
-	tokenHash := strings.TrimSpace(raw.TokenHash)
-	if tokenHash == "" && strings.TrimSpace(raw.Token) != "" {
-		tokenHash = HashArtisanToken(strings.TrimSpace(raw.Token))
+	s.mu.Lock()
+	existing, _ := s.getCommunityProfile(finalID)
+	if existing == nil && finalUUID != finalID {
+		existing, _ = s.getCommunityProfile(finalUUID)
+	}
+	s.mu.Unlock()
+
+	callerToken := extractArtisanToken(r)
+	var issuedToken string
+	tokenHash := ""
+
+	if existing != nil && existing.TokenHash != "" {
+		if callerToken == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
+			return
+		}
+		callerHash := HashArtisanToken(callerToken)
+		if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden: invalid artisan token"}`))
+			return
+		}
+		tokenHash = existing.TokenHash
+	} else {
+		explicitHash := strings.TrimSpace(raw.TokenHash)
+		if explicitHash == "" && strings.TrimSpace(raw.Token) != "" {
+			explicitHash = HashArtisanToken(strings.TrimSpace(raw.Token))
+		}
+		if explicitHash != "" {
+			tokenHash = explicitHash
+		} else {
+			rawTok, th, err := GenerateArtisanToken()
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"failed to generate artisan token"}`))
+				return
+			}
+			tokenHash = th
+			issuedToken = rawTok
+		}
+	}
+
+	authType := strings.TrimSpace(raw.AuthType)
+	authID := strings.TrimSpace(raw.AuthID)
+	if existing != nil {
+		if authType == "" {
+			authType = existing.AuthType
+		}
+		if authID == "" {
+			authID = existing.AuthID
+		}
 	}
 
 	profile := CommunityProfile{
 		ID:        finalID,
 		UUID:      finalUUID,
-		AuthType:  strings.TrimSpace(raw.AuthType),
-		AuthID:    strings.TrimSpace(raw.AuthID),
+		AuthType:  authType,
+		AuthID:    authID,
 		TokenHash: tokenHash,
 		Nickname:  strings.TrimSpace(raw.Nickname),
 		Location:  strings.TrimSpace(raw.Location),
@@ -517,13 +605,18 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	resp, _ := json.Marshal(map[string]string{
+	respMap := map[string]string{
 		"status": "ok",
 		"uuid":   profile.UUID,
 		"id":     profile.GetID(),
-	})
+	}
+	if issuedToken != "" {
+		respMap["artisan_token"] = issuedToken
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	resp, _ := json.Marshal(respMap)
 	_, _ = w.Write(resp)
 }
 
@@ -574,7 +667,7 @@ func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *htt
 	case "html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(renderCommunityHTML(artisans)))
+		_, _ = w.Write([]byte(renderCommunityHTML(artisans, s.IsGitHubAuthEnabled())))
 	case "txt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -593,7 +686,35 @@ func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *htt
 
 func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
 	s.mu.Lock()
-	err := s.deleteCommunityProfile(uuid)
+	existing, err := s.getCommunityProfile(uuid)
+	s.mu.Unlock()
+
+	if err != nil || existing == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"community profile not found"}`))
+		return
+	}
+
+	if existing.TokenHash != "" {
+		callerToken := extractArtisanToken(r)
+		if callerToken == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
+			return
+		}
+		callerHash := HashArtisanToken(callerToken)
+		if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden: invalid artisan token"}`))
+			return
+		}
+	}
+
+	s.mu.Lock()
+	err = s.deleteCommunityProfile(uuid)
 	s.mu.Unlock()
 
 	if err != nil {
@@ -606,6 +727,34 @@ func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *ht
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *CensusServer) handleCommunityMe(w http.ResponseWriter, r *http.Request) {
+	token := extractArtisanToken(r)
+	if token == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
+		return
+	}
+
+	s.mu.Lock()
+	profile, err := s.findProfileByToken(token)
+	s.mu.Unlock()
+
+	if err != nil || profile == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid artisan token"}`))
+		return
+	}
+
+	safe := *profile
+	safe.TokenHash = ""
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(safe)
 }
 
 

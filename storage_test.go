@@ -212,8 +212,9 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 
 	// 1st recent event should be popos (from 12th event)
 	if sum.RecentEvents[0].Distro != "popos" || sum.RecentEvents[0].Desktop != "desktop12" ||
+		sum.RecentEvents[0].EggsVersion != "10.0" ||
 		sum.RecentEvents[0].Remaster || !sum.RecentEvents[0].Sysinstall {
-		t.Errorf("expected 1st recent event to be popos/sysinstall, got %+v", sum.RecentEvents[0])
+		t.Errorf("expected 1st recent event to be popos/sysinstall with version 10.0, got %+v", sum.RecentEvents[0])
 	}
 	// Verify date format
 	if sum.RecentEvents[0].Date == "" {
@@ -225,14 +226,16 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 
 	// 2nd recent event should be mint (from 11th event)
 	if sum.RecentEvents[1].Distro != "mint" || sum.RecentEvents[1].Desktop != "desktop11" ||
+		sum.RecentEvents[1].EggsVersion != "10.0" ||
 		!sum.RecentEvents[1].Remaster || sum.RecentEvents[1].Sysinstall {
-		t.Errorf("expected 2nd recent event to be mint/remaster, got %+v", sum.RecentEvents[1])
+		t.Errorf("expected 2nd recent event to be mint/remaster with version 10.0, got %+v", sum.RecentEvents[1])
 	}
 
 	// 10th recent event should be arch (from 3rd event)
 	if sum.RecentEvents[9].Distro != "arch" || sum.RecentEvents[9].Desktop != "desktop3" ||
+		sum.RecentEvents[9].EggsVersion != "10.0" ||
 		!sum.RecentEvents[9].Remaster || sum.RecentEvents[9].Sysinstall {
-		t.Errorf("expected 10th recent event to be arch/remaster, got %+v", sum.RecentEvents[9])
+		t.Errorf("expected 10th recent event to be arch/remaster with version 10.0, got %+v", sum.RecentEvents[9])
 	}
 
 	// Verify HTML contains the recent events table with headers and rows
@@ -243,10 +246,12 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 	for _, expected := range []string{
 		"Recent Events",
 		"<th>Date</th>",
+		"<th>Version</th>",
 		"popos",
 		"mint",
 		"kali",
 		"desktop12",
+		"10.0",
 		"&#10003;", // checkmark for remaster/sysinstall
 	} {
 		if !strings.Contains(htmlBody, expected) {
@@ -261,8 +266,9 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 	txtBody := wTxt.Body.String()
 	for _, expected := range []string{
 		"### Recent Events",
-		"| Date                | Country | Distro | Desktop | Display Server | Remaster | Sysinstall |",
+		"| Date                | Country | Distro | Desktop | Display Server | Version | Remaster | Sysinstall |",
 		"popos",
+		"10.0",
 		"mint",
 	} {
 		if !strings.Contains(txtBody, expected) {

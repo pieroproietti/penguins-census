@@ -50,6 +50,7 @@ func main() {
 	reset := flag.Bool("reset", false, "Reset (truncate) all census counts and exit")
 	top := flag.Bool("top", false, "Print top 10 unique sysinstall rankings and exit")
 	report := flag.Bool("report", false, "Print full census markdown report to terminal and exit")
+	issueToken := flag.String("issue-token", "", "Generate or rotate artisan token for <artisan-id> and print to stdout")
 	analyzeAccess := flag.String("analyze-access", "", "Path to Apache access log (or '-' for stdin) to estimate active repo machines and exit")
 	saveFlag := flag.Bool("save", false, "When used with -analyze-access, save results to repo-clients.json in census data directory")
 	outPath := flag.String("out", "", "Custom path to save repo analysis JSON")
@@ -95,6 +96,19 @@ func main() {
 			log.Fatalf("failed to read census data (%s): %v", *dataPath, err)
 		}
 		fmt.Print(renderTextSummary(summary))
+		return
+	}
+
+	if *issueToken != "" {
+		srv := NewCensusServer(*dataPath, *mmdbPath)
+		if *communityDir != "" {
+			srv.SetCommunityDir(*communityDir)
+		}
+		rawToken, err := srv.IssueArtisanToken(*issueToken)
+		if err != nil {
+			log.Fatalf("failed to issue token for artisan '%s': %v", *issueToken, err)
+		}
+		fmt.Printf("Issued artisan token for '%s':\n%s\n", *issueToken, rawToken)
 		return
 	}
 

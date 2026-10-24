@@ -92,6 +92,31 @@ h1 {
   border-color: #7dd3fc;
 }
 
+.btn-github {
+  background: #238636;
+  color: #ffffff;
+  border-color: #2ea043;
+  font-weight: 500;
+}
+
+.btn-github:hover {
+  background: #2ea043;
+  color: #ffffff;
+  border-color: #3fb950;
+}
+
+.github-badge {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(35, 134, 54, 0.2);
+  color: #3fb950;
+  border: 1px solid rgba(46, 160, 67, 0.4);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

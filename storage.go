@@ -54,6 +54,42 @@ func (s *CensusServer) findProfileByToken(rawToken string) (*CommunityProfile, e
 	return nil, fmt.Errorf("profile not found or disabled")
 }
 
+func (s *CensusServer) IssueArtisanToken(artisanID string) (string, error) {
+	artisanID = strings.TrimSpace(artisanID)
+	if artisanID == "" {
+		return "", fmt.Errorf("artisan id cannot be empty")
+	}
+
+	rawToken, tokenHash, err := GenerateArtisanToken()
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p, _ := s.getCommunityProfile(artisanID)
+	if p == nil {
+		enabled := true
+		p = &CommunityProfile{
+			ID:        artisanID,
+			UUID:      artisanID,
+			Nickname:  artisanID,
+			TokenHash: tokenHash,
+			Enabled:   &enabled,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+	} else {
+		p.TokenHash = tokenHash
+		p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	if err := s.saveCommunityProfile(*p); err != nil {
+		return "", err
+	}
+	return rawToken, nil
+}
+
 func (s *CensusServer) saveCommunityProfile(profile CommunityProfile) error {
 	dir := s.getCommunityDir()
 	if err := os.MkdirAll(dir, 0750); err != nil {
@@ -529,6 +565,7 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 		artisan := ArtisanProfile{
 			ID:             id,
 			UUID:           p.UUID,
+			AuthType:       p.AuthType,
 			Nickname:       p.Nickname,
 			Location:       p.Location,
 			Bio:            p.Bio,
@@ -566,6 +603,7 @@ func (s *CensusServer) enrichSingleProfile(profile CommunityProfile, dataPath st
 	return ArtisanProfile{
 		ID:        profile.GetID(),
 		UUID:      profile.UUID,
+		AuthType:  profile.AuthType,
 		Nickname:  profile.Nickname,
 		Location:  profile.Location,
 		Bio:       profile.Bio,
@@ -808,6 +846,7 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 			Distro:        distro,
 			Desktop:       desktop,
 			DisplayServer: displayServer,
+			EggsVersion:   strings.TrimSpace(r.EggsVersion),
 			Remaster:      r.Action == "remaster",
 			Sysinstall:    r.Action == "sysinstall",
 		}

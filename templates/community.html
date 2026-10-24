@@ -16,11 +16,13 @@
       <div class="subtitle">Showcase of independent Linux distributions and distro artisans building with Penguins Eggs</div>
     </div>
     <div class="links">
-      <a class="btn" href="/api/census">📊 Telemetry Dashboard</a>
-      <a class="btn" href="?format=txt">Terminal / Plain Text</a>
+      {{if .GitHubAuthEnabled}}
+      <a class="btn btn-github" href="/auth/github/login">🐙 Sign in with GitHub (Get Token)</a>
+      {{end}}
+      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener noreferrer">Home</a>
+      <a class="btn" href="/api/census">📊 Telemetry</a>
+      <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
-      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener noreferrer">Eggs Home</a>
-      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener noreferrer">Eggs Repo</a>
     </div>
   </header>
 
@@ -39,7 +41,10 @@
     <div class="artisan-card" id="artisan-{{.UUID}}">
       <div class="card-top">
         <div class="card-header-row">
-          <h2 class="artisan-nick">{{.Nickname}}</h2>
+          <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap;">
+            <h2 class="artisan-nick">{{.Nickname}}</h2>
+            {{if .IsGitHub}}<span class="github-badge" title="Verified GitHub Artisan">🐙 GitHub</span>{{end}}
+          </div>
           {{if .CountryBadge}}<span class="country-badge">{{.CountryBadge}}</span>{{end}}
         </div>
         {{if .LocationDisplay}}<div class="artisan-loc">{{.LocationDisplay}}</div>{{end}}

@@ -28,7 +28,7 @@ type OptionsInfo struct {
 
 var (
 	emailForbiddenPattern = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
-	uuidSafePattern       = regexp.MustCompile(`^[a-zA-Z0-9_\-]{8,64}$`)
+	uuidSafePattern       = regexp.MustCompile(`^[a-zA-Z0-9_\-]{3,64}$`)
 )
 
 type CommunityProfile struct {
@@ -75,6 +75,7 @@ type ArtisanRemasterInfo struct {
 type ArtisanProfile struct {
 	ID             string               `json:"id,omitempty"`
 	UUID           string               `json:"uuid"`
+	AuthType       string               `json:"auth_type,omitempty"`
 	Nickname       string               `json:"nickname,omitempty"`
 	Location       string               `json:"location,omitempty"`
 	Bio            string               `json:"bio,omitempty"`
@@ -146,6 +147,7 @@ type RecentEvent struct {
 	Distro          string `json:"distro"`
 	Desktop         string `json:"desktop"`
 	DisplayServer   string `json:"display_server"`
+	EggsVersion     string `json:"eggs_version,omitempty"`
 	Remaster        bool   `json:"remaster"`
 	Sysinstall      bool   `json:"sysinstall"`
 	ArtisanNickname string `json:"artisan_nickname,omitempty"`

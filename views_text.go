@@ -9,7 +9,12 @@ import (
 )
 
 func writeMarkdownTable(buf *bytes.Buffer, title, colName string, m map[string]int, total int) {
-	rows := sortedRows(m, total)
+	var rows []TableRow
+	if title == "Version" {
+		rows = sortedVersionRows(m, total)
+	} else {
+		rows = sortedRows(m, total)
+	}
 	fmt.Fprintf(buf, "### %s\n\n", title)
 
 	keyWidth := len(colName)
@@ -198,10 +203,10 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 
 func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 	fmt.Fprintf(buf, "### Recent Events\n\n")
-	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Display Server | Remaster | Sysinstall |\n")
-	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|----------------|:--------:|:----------:|\n")
+	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Display Server | Version | Remaster | Sysinstall |\n")
+	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|----------------|---------|:--------:|:----------:|\n")
 	if len(events) == 0 {
-		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -              | -        | -          |\n\n")
+		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -              | -       | -        | -          |\n\n")
 		return
 	}
 	for _, ev := range events {
@@ -217,6 +222,10 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 		if date == "" {
 			date = "-"
 		}
+		ver := ev.EggsVersion
+		if ver == "" {
+			ver = "-"
+		}
 		distroDisplay := ev.Distro
 		if ev.ArtisanNickname != "" {
 			nick := ev.ArtisanNickname
@@ -225,7 +234,7 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 			}
 			distroDisplay = fmt.Sprintf("%s (%s)", ev.Distro, nick)
 		}
-		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-8s | %-10s |\n", date, ev.Country, distroDisplay, ev.Desktop, ev.DisplayServer, rem, sys)
+		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-7s | %-8s | %-10s |\n", date, ev.Country, distroDisplay, ev.Desktop, ev.DisplayServer, ver, rem, sys)
 	}
 	buf.WriteString("\n")
 }

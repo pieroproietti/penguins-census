@@ -16,11 +16,9 @@
       <div class="subtitle">Since 22 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
     </div>
     <div class="links">
-      <a class="btn" href="/api/community">🐧 Distro Artisans</a>
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
-      <a class="btn" href="https://penguins-eggs.net/access/" target="_blank" rel="noopener">Site</a>
-      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
       {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}<a class="btn" href="#unique-ips">Unique IPs</a>{{end}}
+      <a class="btn" href="/api/community">🐧 Artisans</a>
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
     </div>
@@ -66,47 +64,6 @@
     </section>
     {{end}}
   </div>
-
-  <section class="panel" id="community-artisans">
-    <span id="community" class="anchor-alias"></span>
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
-      <h2 style="margin:0;"><a href="/api/community" class="anchor-link">🐧 Penguins Community Artisans</a></h2>
-      <a class="btn" href="/api/community">View Showcase &rarr;</a>
-    </div>
-    {{if not .Artisans}}
-    <div class="empty">No community artisans registered yet &bull; <a href="/api/community" style="color:var(--accent);">Join Penguins Community</a></div>
-    {{else}}
-    <table>
-      <thead>
-        <tr>
-          <th>Artisan</th>
-          <th>Location</th>
-          <th>Latest ISO</th>
-          <th class="num">Machines</th>
-          <th class="num">Remasters</th>
-          <th class="num">Installs</th>
-          <th>Source</th>
-        </tr>
-      </thead>
-      <tbody>
-        {{range .Artisans}}
-        <tr>
-          <td><a href="{{.Link}}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); font-weight:600; text-decoration:none;">{{.Nickname}}</a></td>
-          <td>{{if .LocationDisplay}}{{.LocationDisplay}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td>
-            {{if .ISOBadge}}<span class="iso-badge" style="font-size:0.8rem; padding:0.15rem 0.45rem;">{{.ISOBadge}}</span>{{else}}<span class="muted">&mdash;</span>{{end}}
-            {{if .LiveDistrosSummary}}<div class="muted" style="font-size:0.75rem; margin-top:0.2rem;">{{.LiveDistrosSummary}}</div>{{end}}
-          </td>
-          <td class="num">{{.MachinesCount}}</td>
-          <td class="num">{{.RemasterCount}}</td>
-          <td class="num">{{.InstallsCount}}</td>
-          <td>{{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer" class="btn" style="padding:0.2rem 0.5rem; font-size:0.75rem;">Source &rarr;</a>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-    {{end}}
-  </section>
 
   <section class="panel" id="top-sysinstalls">
     <span id="top-installations" class="anchor-alias"></span>
@@ -158,13 +115,14 @@
           <th>Distro</th>
           <th>Desktop</th>
           <th>Display Server</th>
+          <th>Version</th>
           <th class="center">Remaster</th>
           <th class="center">Sysinstall</th>
         </tr>
       </thead>
       <tbody>
         {{if not .RecentEvents}}
-        <tr><td colspan="7" class="empty">No events recorded yet</td></tr>
+        <tr><td colspan="8" class="empty">No events recorded yet</td></tr>
         {{else}}
         {{range .RecentEvents}}
         <tr>
@@ -178,6 +136,7 @@
           </td>
           <td>{{.Desktop}}</td>
           <td>{{.DisplayServer}}</td>
+          <td>{{if .EggsVersion}}{{.EggsVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
           <td class="center">{{if .Remaster}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
           <td class="center">{{if .Sysinstall}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         </tr>
