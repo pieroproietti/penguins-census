@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🐧 Penguins Community &amp; Distro Artisans</title>
+<style>
+{{.CSS}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>🐧 Penguins Community &amp; Distro Artisans</h1>
+      <div class="subtitle">Showcase of independent Linux distributions and distro artisans building with Penguins Eggs</div>
+    </div>
+    <div class="links">
+      <a class="btn" href="/api/census">📊 Telemetry Dashboard</a>
+      <a class="btn" href="?format=txt">Terminal / Plain Text</a>
+      <a class="btn" href="?format=json">Raw JSON</a>
+      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener noreferrer">Eggs Home</a>
+      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener noreferrer">Eggs Repo</a>
+    </div>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Distro Artisans</div><div class="card-value">{{.TotalArtisans}}</div></div>
+    <div class="card"><div class="card-label">Remaster ISOs Built</div><div class="card-value">{{.TotalRemasters}}</div></div>
+    <div class="card"><div class="card-label">Countries Represented</div><div class="card-value">{{.TotalCountries}}</div></div>
+  </div>
+
+  <div class="artisans-grid">
+    {{if not .Artisans}}
+    <div class="empty">No community artisans registered yet &bull; Register your profile to join the showcase!</div>
+    {{else}}
+    {{range .Artisans}}
+    <div class="artisan-card" id="artisan-{{.UUID}}">
+      <div class="card-top">
+        <div class="card-header-row">
+          <h2 class="artisan-nick">{{.Nickname}}</h2>
+          {{if .CountryBadge}}<span class="country-badge">{{.CountryBadge}}</span>{{end}}
+        </div>
+        {{if .LocationDisplay}}<div class="artisan-loc">{{.LocationDisplay}}</div>{{end}}
+        {{if .Bio}}
+        <p class="bio">{{.Bio}}</p>
+        {{else}}
+        <p class="bio" style="color:var(--muted); font-style:italic;">No bio provided.</p>
+        {{end}}
+      </div>
+
+      <div class="iso-box">
+        {{if .HasLatestRemaster}}
+        <div class="iso-label">
+          <span>Ultima ISO sfornata</span>
+          <span>{{.RemasterCount}} {{.PluralBuilds}}</span>
+        </div>
+        <div class="iso-badge">{{.ISOBadge}}</div>
+        <div class="iso-meta">Last build: {{.LastBuildDate}}</div>
+        {{else}}
+        <div class="iso-label"><span>Ultima ISO sfornata</span></div>
+        <div class="iso-badge" style="opacity:0.6; font-size:0.8rem;">No ISO recorded yet</div>
+        {{end}}
+      </div>
+
+      {{if or .SourceURL .Socials}}
+      <div class="card-actions">
+        {{if .SourceURL}}
+        <a href="{{.SourceURL}}" class="btn btn-primary" target="_blank" rel="noopener noreferrer">🌐 Source / Project &rarr;</a>
+        {{end}}
+        {{range .Socials}}
+        <a href="{{.URL}}" class="social-badge" target="_blank" rel="noopener noreferrer">{{.Label}}</a>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+    {{end}}
+    {{end}}
+  </div>
+</div>
+</body>
+</html>

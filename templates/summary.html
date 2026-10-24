@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Penguins Eggs Worldwide Usage</title>
+<style>
+{{.CSS}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1>Penguins Eggs Worldwide Usage</h1>
+      <div class="subtitle">Since 22 October 2026 &bull; Privacy-respecting aggregated telemetry (no IP addresses stored)</div>
+    </div>
+    <div class="links">
+      <a class="btn" href="/api/community">🐧 Distro Artisans</a>
+      <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
+      <a class="btn" href="https://penguins-eggs.net/access/" target="_blank" rel="noopener">Site</a>
+      <a class="btn" href="https://github.com/pieroproietti/penguins-eggs" target="_blank" rel="noopener">Repository</a>
+      {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}<a class="btn" href="#unique-ips">Unique IPs</a>{{end}}
+      <a class="btn" href="?format=txt">Plain Text / Markdown</a>
+      <a class="btn" href="?format=json">Raw JSON</a>
+    </div>
+  </header>
+
+  <div class="cards" id="overview">
+    <div class="card" id="total-events"><div class="card-label">Total Events</div><div class="card-value">{{.TotalEvents}}</div></div>
+    <div class="card" id="unique-machines"><div class="card-label">Unique Machines</div><div class="card-value">{{.UniqueMachines}}</div></div>
+    <div class="card" id="remasters-clones"><span id="remasters" class="anchor-alias"></span><span id="remaster" class="anchor-alias"></span><span id="remaster-clone" class="anchor-alias"></span><div class="card-label">Remasters/Clones</div><div class="card-value">{{.RemasterCount}}/{{.RemasterClones}}</div></div>
+    <div class="card" id="sysinstalls-clones"><span id="sysinstalls" class="anchor-alias"></span><span id="installations" class="anchor-alias"></span><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><span id="sysinstall-clone" class="anchor-alias"></span><span id="clones" class="anchor-alias"></span><span id="clone" class="anchor-alias"></span><div class="card-label">Sysinstalls/Clones</div><div class="card-value">{{.SysinstallCount}}/{{.SysinstallClones}}</div></div>
+  </div>
+
+  <div class="grid">
+    {{range .Tables}}
+    <section class="panel" id="{{.ID}}">
+      {{range .Aliases}}<span id="{{.}}" class="anchor-alias"></span>{{end}}
+      <h2><a href="#{{.ID}}" class="anchor-link">{{.Title}}</a></h2>
+      <table>
+        <thead>
+          <tr>
+            <th>{{.ColName}}</th>
+            <th class="num">Count</th>
+            <th class="num">Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{if not .Rows}}
+          <tr><td colspan="3" class="empty">No events recorded yet</td></tr>
+          {{else}}
+          {{range .Rows}}
+          <tr>
+            <td>
+              <span class="label">{{.Key}}</span>
+              <div class="bar"><div class="fill" style="width:{{printf "%.1f" .Percent}}%"></div></div>
+            </td>
+            <td class="num">{{.Count}}</td>
+            <td class="num">{{printf "%.1f" .Percent}}%</td>
+          </tr>
+          {{end}}
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+    {{end}}
+  </div>
+
+  <section class="panel" id="community-artisans">
+    <span id="community" class="anchor-alias"></span>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem; flex-wrap:wrap; gap:0.5rem;">
+      <h2 style="margin:0;"><a href="/api/community" class="anchor-link">🐧 Penguins Community Artisans</a></h2>
+      <a class="btn" href="/api/community">View Showcase &rarr;</a>
+    </div>
+    {{if not .Artisans}}
+    <div class="empty">No community artisans registered yet &bull; <a href="/api/community" style="color:var(--accent);">Join Penguins Community</a></div>
+    {{else}}
+    <table>
+      <thead>
+        <tr>
+          <th>Artisan</th>
+          <th>Location</th>
+          <th>Latest ISO</th>
+          <th class="num">Remasters</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Artisans}}
+        <tr>
+          <td><a href="{{.Link}}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); font-weight:600; text-decoration:none;">{{.Nickname}}</a></td>
+          <td>{{if .LocationDisplay}}{{.LocationDisplay}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td>{{if .ISOBadge}}<span class="iso-badge" style="font-size:0.8rem; padding:0.15rem 0.45rem;">{{.ISOBadge}}</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="num">{{.RemasterCount}}</td>
+          <td>{{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer" class="btn" style="padding:0.2rem 0.5rem; font-size:0.75rem;">Source &rarr;</a>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{end}}
+  </section>
+
+  <section class="panel" id="top-sysinstalls">
+    <span id="top-installations" class="anchor-alias"></span>
+    <h2><a href="#top-sysinstalls" class="anchor-link">Top 10 Sysinstalls</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th>Display Server</th>
+          <th>Arch</th>
+          <th>Version</th>
+          <th class="num">Sysinstalls</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{if not .TopInstallations}}
+        <tr><td colspan="7" class="empty">No sysinstalls recorded yet</td></tr>
+        {{else}}
+        {{range .TopInstallations}}
+        <tr>
+          <td>{{.Country}}</td>
+          <td>{{.Distro}}</td>
+          <td>{{.Desktop}}</td>
+          <td>{{.DisplayServer}}</td>
+          <td>{{.Arch}}</td>
+          <td>{{.EggsVersion}}</td>
+          <td class="num">{{.SumSysinstall}}</td>
+        </tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="recent-events">
+    <h2><a href="#recent-events" class="anchor-link">Recent Events</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th>Display Server</th>
+          <th class="center">Remaster</th>
+          <th class="center">Sysinstall</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{if not .RecentEvents}}
+        <tr><td colspan="7" class="empty">No events recorded yet</td></tr>
+        {{else}}
+        {{range .RecentEvents}}
+        <tr>
+          <td>{{if .Date}}{{.Date}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td>{{.Country}}</td>
+          <td>
+            {{.Distro}}
+            {{if .ArtisanNickname}}
+            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{end}}
+          </td>
+          <td>{{.Desktop}}</td>
+          <td>{{.DisplayServer}}</td>
+          <td class="center">{{if .Remaster}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="center">{{if .Sysinstall}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        </tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}
+  <section class="panel" id="unique-ips">
+    <span id="repo-clients" class="anchor-alias"></span>
+    <span id="unique-ips-last-15-days" class="anchor-alias"></span>
+    <h2><a href="#unique-ips" class="anchor-link">Unique IP last 15 days</a></h2>
+    <div class="subtitle" style="margin-bottom: 1rem; color: var(--muted); font-size: 0.85rem;">Estimated from package manager access logs (Debian/APT, Arch/ALPM, RPM/DNF, Alpine/APK) &bull; Updated: {{.RepoClients.GeneratedAt}}</div>
+
+    <div class="cards" style="margin-bottom: 1.5rem;">
+      <div class="card"><div class="card-label">Unique IPs (15 days)</div><div class="card-value">{{.RepoClients.UniqueIPs}}</div></div>
+      <div class="card"><div class="card-label">Census Active Machines</div><div class="card-value">{{.RepoClients.CensusMachines}}</div></div>
+      <div class="card"><div class="card-label">Completed Operations</div><div class="card-value">{{.RepoClients.CompletedOps}}</div></div>
+    </div>
+
+    <div class="grid">
+      {{range .RepoClients.Tables}}
+      <section class="panel" id="{{.ID}}">
+        <h2><a href="#{{.ID}}" class="anchor-link">{{.Title}}</a></h2>
+        <table>
+          <thead>
+            <tr>
+              <th>{{.ColName}}</th>
+              <th class="num">Count</th>
+              <th class="num">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{if not .Rows}}
+            <tr><td colspan="3" class="empty">No events recorded yet</td></tr>
+            {{else}}
+            {{range .Rows}}
+            <tr>
+              <td>
+                <span class="label">{{.Key}}</span>
+                <div class="bar"><div class="fill" style="width:{{printf "%.1f" .Percent}}%"></div></div>
+              </td>
+              <td class="num">{{.Count}}</td>
+              <td class="num">{{printf "%.1f" .Percent}}%</td>
+            </tr>
+            {{end}}
+            {{end}}
+          </tbody>
+        </table>
+      </section>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+</div>
+</body>
+</html>
