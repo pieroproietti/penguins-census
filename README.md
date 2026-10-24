@@ -95,7 +95,7 @@ make deb
 Install the generated package on the server and download the GeoIP database:
 
 ```bash
-sudo apt install ./penguins-census_0.2.2-1_amd64.deb
+sudo apt install ./penguins-census_0.2.3-1_amd64.deb
 sudo penguins-census-update-geoip
 sudo systemctl status penguins-census
 ```
