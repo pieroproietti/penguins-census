@@ -27,6 +27,7 @@
   <div class="cards">
     <div class="card"><div class="card-label">Distro Artisans</div><div class="card-value">{{.TotalArtisans}}</div></div>
     <div class="card"><div class="card-label">Remaster ISOs Built</div><div class="card-value">{{.TotalRemasters}}</div></div>
+    <div class="card"><div class="card-label">Derived Installs</div><div class="card-value">{{.TotalInstalls}}</div></div>
     <div class="card"><div class="card-label">Countries Represented</div><div class="card-value">{{.TotalCountries}}</div></div>
   </div>
 
@@ -47,6 +48,13 @@
         {{else}}
         <p class="bio" style="color:var(--muted); font-style:italic;">No bio provided.</p>
         {{end}}
+        <div class="artisan-stats" style="display:flex; flex-wrap:wrap; gap:0.5rem; margin:0.4rem 0 0.2rem 0; font-size:0.8rem; color:var(--muted);">
+          <span>💻 {{.MachinesCount}} {{if eq .MachinesCount 1}}machine{{else}}machines{{end}}</span>
+          <span>&bull;</span>
+          <span>🔨 {{.RemasterCount}} {{.PluralBuilds}}</span>
+          <span>&bull;</span>
+          <span>🚀 {{.InstallsCount}} {{if eq .InstallsCount 1}}install{{else}}installs{{end}}</span>
+        </div>
       </div>
 
       <div class="iso-box">
@@ -62,6 +70,20 @@
         <div class="iso-badge" style="opacity:0.6; font-size:0.8rem;">No ISO recorded yet</div>
         {{end}}
       </div>
+
+      {{if .LiveDistros}}
+      <div class="live-catalog" style="margin-top:0.6rem; font-size:0.75rem;">
+        <div style="font-weight:600; margin-bottom:0.3rem; color:var(--muted);">Live Distros Catalog:</div>
+        <ul style="list-style:none; padding-left:0; margin:0; display:flex; flex-direction:column; gap:0.25rem;">
+          {{range .LiveDistros}}
+          <li style="display:flex; justify-content:space-between; align-items:center; background:rgba(255,255,255,0.03); padding:0.2rem 0.4rem; border-radius:4px;">
+            <span>{{.Badge}}</span>
+            <span class="muted">{{.Count}} {{if eq .Count 1}}build{{else}}builds{{end}}</span>
+          </li>
+          {{end}}
+        </ul>
+      </div>
+      {{end}}
 
       {{if or .SourceURL .Socials}}
       <div class="card-actions">

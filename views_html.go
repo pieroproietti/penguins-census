@@ -275,12 +275,15 @@ type HTMLTableCard struct {
 }
 
 type HTMLArtisanSummaryItem struct {
-	Nickname        string
-	Link            template.URL
-	LocationDisplay string
-	ISOBadge        string
-	RemasterCount   int
-	SourceURL       string
+	Nickname           string
+	Link               template.URL
+	LocationDisplay    string
+	ISOBadge           string
+	MachinesCount      int
+	RemasterCount      int
+	InstallsCount      int
+	LiveDistrosSummary string
+	SourceURL          string
 }
 
 type HTMLRecentEventItem struct {
@@ -293,6 +296,18 @@ type HTMLRecentEventItem struct {
 	DisplayServer   string
 	Remaster        bool
 	Sysinstall      bool
+}
+
+type HTMLTopInstallationItem struct {
+	Country         string
+	Distro          string
+	ArtisanNickname string
+	ArtisanURL      template.URL
+	Desktop         string
+	DisplayServer   string
+	Arch            string
+	EggsVersion     string
+	SumSysinstall   int
 }
 
 type HTMLRepoClientsView struct {
@@ -313,22 +328,32 @@ type HTMLSummaryView struct {
 	SysinstallClones int
 	Tables           []HTMLTableCard
 	Artisans         []HTMLArtisanSummaryItem
-	TopInstallations []TopInstallation
+	TopInstallations []HTMLTopInstallationItem
 	RecentEvents     []HTMLRecentEventItem
 	RepoClients      *HTMLRepoClientsView
 }
 
+type HTMLLiveDistroItem struct {
+	Badge    string
+	Count    int
+	LastSeen string
+}
+
 type HTMLArtisanCard struct {
+	ID                string
 	UUID              string
 	Nickname          string
 	CountryBadge      string
 	LocationDisplay   string
 	Bio               string
 	HasLatestRemaster bool
+	MachinesCount     int
 	RemasterCount     int
+	InstallsCount     int
 	PluralBuilds      string
 	ISOBadge          string
 	LastBuildDate     string
+	LiveDistros       []HTMLLiveDistroItem
 	SourceURL         template.URL
 	Socials           []SocialLink
 }
@@ -337,6 +362,7 @@ type HTMLCommunityView struct {
 	CSS            template.CSS
 	TotalArtisans  int
 	TotalRemasters int
+	TotalInstalls  int
 	TotalCountries int
 	Artisans       []HTMLArtisanCard
 }
@@ -392,13 +418,25 @@ func renderHTMLSummary(s CensusSummary) string {
 			artisanLink = a.SourceURL
 		}
 
+		liveDistrosSummary := ""
+		if len(a.LiveDistros) > 1 {
+			var distros []string
+			for _, ld := range a.LiveDistros {
+				distros = append(distros, fmt.Sprintf("%s (%d)", ld.DistroName, ld.Count))
+			}
+			liveDistrosSummary = strings.Join(distros, ", ")
+		}
+
 		artisanItems = append(artisanItems, HTMLArtisanSummaryItem{
-			Nickname:        nick,
-			Link:            template.URL(artisanLink),
-			LocationDisplay: locDisplay,
-			ISOBadge:        isoBadge,
-			RemasterCount:   a.RemasterCount,
-			SourceURL:       sourceLink,
+			Nickname:           nick,
+			Link:               template.URL(artisanLink),
+			LocationDisplay:    locDisplay,
+			ISOBadge:           isoBadge,
+			MachinesCount:      a.MachinesCount,
+			RemasterCount:      a.RemasterCount,
+			InstallsCount:      a.InstallsCount,
+			LiveDistrosSummary: liveDistrosSummary,
+			SourceURL:          sourceLink,
 		})
 	}
 
@@ -430,6 +468,33 @@ func renderHTMLSummary(s CensusSummary) string {
 		})
 	}
 
+	topItems := make([]HTMLTopInstallationItem, 0, len(s.TopInstallations))
+	for _, ti := range s.TopInstallations {
+		artisanNick := ""
+		artisanURL := ""
+		if ti.ArtisanNickname != "" {
+			artisanNick = ti.ArtisanNickname
+			if !strings.HasPrefix(artisanNick, "@") {
+				artisanNick = "@" + artisanNick
+			}
+			artisanURL = ti.ArtisanURL
+			if !isSafeURL(artisanURL) {
+				artisanURL = "/api/community"
+			}
+		}
+		topItems = append(topItems, HTMLTopInstallationItem{
+			Country:         ti.Country,
+			Distro:          ti.Distro,
+			ArtisanNickname: artisanNick,
+			ArtisanURL:      template.URL(artisanURL),
+			Desktop:         ti.Desktop,
+			DisplayServer:   ti.DisplayServer,
+			Arch:            ti.Arch,
+			EggsVersion:     ti.EggsVersion,
+			SumSysinstall:   ti.SumSysinstall,
+		})
+	}
+
 	var repoView *HTMLRepoClientsView
 	if s.RepoClients != nil && s.RepoClients.UniqueIPs > 0 {
 		totalOps := s.ByAction["remaster"] + s.ByAction["sysinstall"]
@@ -455,7 +520,7 @@ func renderHTMLSummary(s CensusSummary) string {
 		SysinstallClones: s.SysinstallClones,
 		Tables:           tables,
 		Artisans:         artisanItems,
-		TopInstallations: s.TopInstallations,
+		TopInstallations: topItems,
 		RecentEvents:     recentItems,
 		RepoClients:      repoView,
 	}
@@ -469,11 +534,13 @@ func renderHTMLSummary(s CensusSummary) string {
 
 func renderCommunityHTML(artisans []ArtisanProfile) string {
 	totalRemasters := 0
+	totalInstalls := 0
 	countriesMap := make(map[string]bool)
 	cardItems := make([]HTMLArtisanCard, 0, len(artisans))
 
 	for _, a := range artisans {
 		totalRemasters += a.RemasterCount
+		totalInstalls += a.InstallsCount
 		country := strings.ToUpper(strings.TrimSpace(a.Country))
 		if country != "" && country != "XX" {
 			countriesMap[country] = true
@@ -481,7 +548,7 @@ func renderCommunityHTML(artisans []ArtisanProfile) string {
 
 		nick := strings.TrimSpace(a.Nickname)
 		if nick == "" {
-			nick = a.UUID
+			nick = a.GetID()
 			if len(nick) > 8 {
 				nick = nick[:8]
 			}
@@ -530,17 +597,31 @@ func renderCommunityHTML(artisans []ArtisanProfile) string {
 			}
 		}
 
+		liveItems := make([]HTMLLiveDistroItem, 0, len(a.LiveDistros))
+		for _, ld := range a.LiveDistros {
+			badge := formatDistroBadge(DistroInfo{ID: ld.DistroName, Release: ld.Version}, SystemInfo{Arch: ld.Arch, Desktop: ld.Desktop})
+			liveItems = append(liveItems, HTMLLiveDistroItem{
+				Badge:    badge,
+				Count:    ld.Count,
+				LastSeen: formatEventDate(ld.LastSeen),
+			})
+		}
+
 		cardItems = append(cardItems, HTMLArtisanCard{
+			ID:                a.GetID(),
 			UUID:              a.UUID,
 			Nickname:          nick,
 			CountryBadge:      countryBadge,
 			LocationDisplay:   locDisplay,
 			Bio:               strings.TrimSpace(a.Bio),
 			HasLatestRemaster: hasLatest,
+			MachinesCount:     a.MachinesCount,
 			RemasterCount:     a.RemasterCount,
+			InstallsCount:     a.InstallsCount,
 			PluralBuilds:      pluralRemasters(a.RemasterCount),
 			ISOBadge:          isoBadge,
 			LastBuildDate:     lastBuildDate,
+			LiveDistros:       liveItems,
 			SourceURL:         template.URL(sourceURL),
 			Socials:           safeSocials,
 		})
@@ -550,6 +631,7 @@ func renderCommunityHTML(artisans []ArtisanProfile) string {
 		CSS:            template.CSS(embeddedCSS),
 		TotalArtisans:  len(artisans),
 		TotalRemasters: totalRemasters,
+		TotalInstalls:  totalInstalls,
 		TotalCountries: len(countriesMap),
 		Artisans:       cardItems,
 	}

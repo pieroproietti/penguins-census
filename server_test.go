@@ -836,3 +836,279 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 		t.Fatalf("census.jsonl su disco must NEVER be modified! Bytes differ.")
 	}
 }
+
+func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	defer srv.Close()
+	srv.SetCommunityDir(commDir)
+
+	// 1. Generate token
+	rawToken, tokenHash, err := GenerateArtisanToken()
+	if err != nil {
+		t.Fatalf("GenerateArtisanToken failed: %v", err)
+	}
+	if !strings.HasPrefix(rawToken, "egg_pat_") {
+		t.Errorf("token must start with egg_pat_, got: %s", rawToken)
+	}
+	if HashArtisanToken(rawToken) != tokenHash {
+		t.Errorf("HashArtisanToken mismatch")
+	}
+
+	// 2. Register community profile with token_hash
+	profilePayload := `{
+		"id": "distromaster",
+		"uuid": "distromaster",
+		"nickname": "distromaster",
+		"location": "Napoli, IT",
+		"token_hash": "` + tokenHash + `",
+		"source_url": "https://distromaster.org"
+	}`
+	reqComm := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(profilePayload))
+	reqComm.Header.Set("Content-Type", "application/json")
+	wComm := httptest.NewRecorder()
+	srv.ServeHTTP(wComm, reqComm)
+	if wComm.Code != http.StatusOK {
+		t.Fatalf("failed to create community profile: %s", wComm.Body.String())
+	}
+
+	// 3. Scenario A: 1 Artisan sending remaster from 2 distinct machines (M1, M2)
+	// Machine M1: X-Eggs-Artisan-Token header
+	m1Payload := `{
+		"uuid": "M1",
+		"eggs_version": "10.1.0",
+		"action": "remaster",
+		"distro": {"id": "debian", "codename": "trixie", "release": "13"},
+		"system": {"arch": "amd64", "desktop": "xfce"}
+	}`
+	reqM1 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(m1Payload))
+	reqM1.Header.Set("Content-Type", "application/json")
+	reqM1.Header.Set("X-Eggs-Artisan-Token", rawToken)
+	wM1 := httptest.NewRecorder()
+	srv.ServeHTTP(wM1, reqM1)
+	if wM1.Code != http.StatusOK {
+		t.Fatalf("M1 POST failed: %d: %s", wM1.Code, wM1.Body.String())
+	}
+
+	// Machine M2: Authorization: Bearer header
+	m2Payload := `{
+		"uuid": "M2",
+		"eggs_version": "10.1.0",
+		"action": "remaster",
+		"distro": {"id": "debian", "codename": "trixie", "release": "13"},
+		"system": {"arch": "arm64", "desktop": "gnome"}
+	}`
+	reqM2 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(m2Payload))
+	reqM2.Header.Set("Content-Type", "application/json")
+	reqM2.Header.Set("Authorization", "Bearer "+rawToken)
+	wM2 := httptest.NewRecorder()
+	srv.ServeHTTP(wM2, reqM2)
+	if wM2.Code != http.StatusOK {
+		t.Fatalf("M2 POST failed: %d: %s", wM2.Code, wM2.Body.String())
+	}
+
+	// Verify Scenario A on /api/community/distromaster
+	reqGetA := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	wGetA := httptest.NewRecorder()
+	srv.ServeHTTP(wGetA, reqGetA)
+	if wGetA.Code != http.StatusOK {
+		t.Fatalf("GET /api/community/distromaster failed: %d: %s", wGetA.Code, wGetA.Body.String())
+	}
+
+	var profA ArtisanProfile
+	if err := json.Unmarshal(wGetA.Body.Bytes(), &profA); err != nil {
+		t.Fatalf("failed to decode artisan profile: %v", err)
+	}
+	if profA.MachinesCount != 2 {
+		t.Errorf("expected MachinesCount == 2, got %d", profA.MachinesCount)
+	}
+	if profA.RemasterCount != 2 {
+		t.Errorf("expected RemasterCount == 2, got %d", profA.RemasterCount)
+	}
+	if len(profA.LiveDistros) != 2 {
+		t.Fatalf("expected LiveDistros length == 2, got %d: %+v", len(profA.LiveDistros), profA.LiveDistros)
+	}
+
+	// 4. Scenario B: 3 users sending sysinstall from new machines (U1, U2, U3) with parent_id: "M1" or "M2" (without token)
+	users := []struct {
+		uuid     string
+		parentID string
+		arch     string
+		desktop  string
+	}{
+		{uuid: "U1", parentID: "M1", arch: "amd64", desktop: "xfce"},
+		{uuid: "U2", parentID: "M2", arch: "arm64", desktop: "gnome"},
+		{uuid: "U3", parentID: "M1", arch: "amd64", desktop: "xfce"},
+	}
+
+	for _, u := range users {
+		uPayload := `{
+			"uuid": "` + u.uuid + `",
+			"parent_id": "` + u.parentID + `",
+			"eggs_version": "10.1.0",
+			"action": "sysinstall",
+			"distro": {"id": "debian", "codename": "trixie", "release": "13"},
+			"system": {"arch": "` + u.arch + `", "desktop": "` + u.desktop + `"}
+		}`
+		reqU := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(uPayload))
+		reqU.Header.Set("Content-Type", "application/json")
+		wU := httptest.NewRecorder()
+		srv.ServeHTTP(wU, reqU)
+		if wU.Code != http.StatusOK {
+			t.Fatalf("user %s POST failed: %d: %s", u.uuid, wU.Code, wU.Body.String())
+		}
+	}
+
+	// Verify Scenario B on /api/community/distromaster -> InstallsCount == 3
+	reqGetB := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	wGetB := httptest.NewRecorder()
+	srv.ServeHTTP(wGetB, reqGetB)
+	if wGetB.Code != http.StatusOK {
+		t.Fatalf("GET /api/community/distromaster failed: %d", wGetB.Code)
+	}
+	var profB ArtisanProfile
+	if err := json.Unmarshal(wGetB.Body.Bytes(), &profB); err != nil {
+		t.Fatalf("failed to decode artisan profile B: %v", err)
+	}
+	if profB.InstallsCount != 3 {
+		t.Errorf("expected InstallsCount == 3, got %d", profB.InstallsCount)
+	}
+	if profB.MachinesCount != 2 {
+		t.Errorf("expected MachinesCount == 2 (should not count child user machines), got %d", profB.MachinesCount)
+	}
+	if profB.RemasterCount != 2 {
+		t.Errorf("expected RemasterCount == 2, got %d", profB.RemasterCount)
+	}
+
+	// 5. Verify /api/census?format=json TopInstallations and RecentEvents enrichment
+	reqCensusJSON := httptest.NewRequest(http.MethodGet, "/api/census?format=json", nil)
+	wCensusJSON := httptest.NewRecorder()
+	srv.ServeHTTP(wCensusJSON, reqCensusJSON)
+	if wCensusJSON.Code != http.StatusOK {
+		t.Fatalf("GET /api/census failed: %d", wCensusJSON.Code)
+	}
+
+	var censusSum CensusSummary
+	if err := json.Unmarshal(wCensusJSON.Body.Bytes(), &censusSum); err != nil {
+		t.Fatalf("failed to decode census summary: %v", err)
+	}
+
+	// Verify TopInstallations are enriched with artisan nickname & URL
+	if len(censusSum.TopInstallations) == 0 {
+		t.Fatalf("expected TopInstallations to not be empty")
+	}
+	foundTopArtisan := false
+	for _, ti := range censusSum.TopInstallations {
+		if ti.ArtisanNickname == "distromaster" && ti.ArtisanURL == "https://distromaster.org" {
+			foundTopArtisan = true
+			if ti.SumSysinstall < 1 {
+				t.Errorf("expected positive sum_sysinstall for artisan top install, got %d", ti.SumSysinstall)
+			}
+		}
+	}
+	if !foundTopArtisan {
+		t.Errorf("expected TopInstallations to contain artisan 'distromaster': %+v", censusSum.TopInstallations)
+	}
+
+	// Verify RecentEvents are enriched with artisan nickname & URL for child installs
+	foundRecentChild := false
+	for _, ev := range censusSum.RecentEvents {
+		if ev.Sysinstall && ev.ArtisanNickname == "distromaster" && ev.ArtisanURL == "https://distromaster.org" {
+			foundRecentChild = true
+		}
+	}
+	if !foundRecentChild {
+		t.Errorf("expected RecentEvents to have child sysinstall with distromaster artisan: %+v", censusSum.RecentEvents)
+	}
+
+	// 6. Verify HTML output has artisan badges in Top 10 Sysinstalls and Recent Events
+	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
+	wHTML := httptest.NewRecorder()
+	srv.ServeHTTP(wHTML, reqHTML)
+	html := wHTML.Body.String()
+	if !strings.Contains(html, "@distromaster") {
+		t.Errorf("expected HTML summary to contain @distromaster, got:\n%s", html)
+	}
+	if !strings.Contains(html, "https://distromaster.org") {
+		t.Errorf("expected HTML summary to contain artisan URL, got:\n%s", html)
+	}
+
+	// 7. Test transitive lineage: child machine U1 creates ISO or installs U4
+	u4Payload := `{
+		"uuid": "U4",
+		"parent_id": "U1",
+		"eggs_version": "10.1.0",
+		"action": "sysinstall",
+		"distro": {"id": "debian", "codename": "trixie", "release": "13"},
+		"system": {"arch": "amd64", "desktop": "xfce"}
+	}`
+	reqU4 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(u4Payload))
+	reqU4.Header.Set("Content-Type", "application/json")
+	wU4 := httptest.NewRecorder()
+	srv.ServeHTTP(wU4, reqU4)
+	if wU4.Code != http.StatusOK {
+		t.Fatalf("U4 POST failed: %d", wU4.Code)
+	}
+
+	// After transitive install, InstallsCount should be 4
+	reqGetC := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	wGetC := httptest.NewRecorder()
+	srv.ServeHTTP(wGetC, reqGetC)
+	var profC ArtisanProfile
+	_ = json.Unmarshal(wGetC.Body.Bytes(), &profC)
+	if profC.InstallsCount != 4 {
+		t.Errorf("expected transitive InstallsCount == 4, got %d", profC.InstallsCount)
+	}
+}
+
+func TestArtisanTokenValidationAndSpoofingPrevention(t *testing.T) {
+	tmpDir := t.TempDir()
+	dataFile := filepath.Join(tmpDir, "census.jsonl")
+	commDir := filepath.Join(tmpDir, "community")
+
+	srv := NewCensusServer(dataFile, "")
+	defer srv.Close()
+	srv.SetCommunityDir(commDir)
+
+	_, tokenHash, _ := GenerateArtisanToken()
+
+	// Create valid profile
+	_ = srv.saveCommunityProfile(CommunityProfile{
+		ID:        "target-artisan",
+		UUID:      "target-artisan",
+		TokenHash: tokenHash,
+		Nickname:  "target",
+	})
+
+	// 1. Post with wrong token: should NOT fail (returns 200 OK), but should NOT set artisan_id
+	wrongPayload := `{"uuid":"rogue-machine-1","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64"}}`
+	req1 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(wrongPayload))
+	req1.Header.Set("X-Eggs-Artisan-Token", "egg_pat_badtoken00000000000000000000000000000000000000000000000000000000")
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on invalid token fallback, got %d", w1.Code)
+	}
+
+	// 2. Post with spoofed artisan_id in body without token: should NOT be attributed
+	spoofPayload := `{"uuid":"rogue-machine-2","artisan_id":"target-artisan","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64"}}`
+	req2 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(spoofPayload))
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on body-only artisan_id, got %d", w2.Code)
+	}
+
+	// Verify profile stats: target-artisan must have 0 remasters and 0 machines!
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/target-artisan", nil)
+	wGet := httptest.NewRecorder()
+	srv.ServeHTTP(wGet, reqGet)
+	var prof ArtisanProfile
+	_ = json.Unmarshal(wGet.Body.Bytes(), &prof)
+	if prof.RemasterCount != 0 || prof.MachinesCount != 0 {
+		t.Errorf("spoofing prevention failed: expected RemasterCount=0, MachinesCount=0, got remasters=%d machines=%d", prof.RemasterCount, prof.MachinesCount)
+	}
+}

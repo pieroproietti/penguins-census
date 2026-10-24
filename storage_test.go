@@ -484,3 +484,74 @@ func TestCommunityDecouplingFromCensusTelemetry(t *testing.T) {
 		t.Errorf("census text report contains community profile data: %s", repTxt)
 	}
 }
+
+func TestTokenGenerationAndStorage(t *testing.T) {
+	rawToken, tokenHash, err := GenerateArtisanToken()
+	if err != nil {
+		t.Fatalf("GenerateArtisanToken error: %v", err)
+	}
+	if !strings.HasPrefix(rawToken, "egg_pat_") {
+		t.Fatalf("expected egg_pat_ prefix, got %s", rawToken)
+	}
+	if len(rawToken) != 8+64 {
+		t.Fatalf("expected 72 char token, got %d", len(rawToken))
+	}
+	if HashArtisanToken(rawToken) != tokenHash {
+		t.Fatalf("HashArtisanToken mismatch")
+	}
+
+	tmpDir := t.TempDir()
+	commDir := filepath.Join(tmpDir, "community")
+	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
+	srv.SetCommunityDir(commDir)
+
+	// Test profile storage using ID
+	prof := CommunityProfile{
+		ID:        "artisan-test-id",
+		UUID:      "artisan-test-uuid",
+		Nickname:  "artisan-tester",
+		TokenHash: tokenHash,
+	}
+	if err := srv.saveCommunityProfile(prof); err != nil {
+		t.Fatalf("saveCommunityProfile error: %v", err)
+	}
+
+	// Verify file is saved as <id>.json
+	if _, err := os.Stat(filepath.Join(commDir, "artisan-test-id.json")); err != nil {
+		t.Fatalf("expected file artisan-test-id.json to exist: %v", err)
+	}
+
+	// Test getCommunityProfile by ID and by UUID
+	byID, err := srv.getCommunityProfile("artisan-test-id")
+	if err != nil || byID.Nickname != "artisan-tester" {
+		t.Fatalf("failed getCommunityProfile by ID: %v", err)
+	}
+	byUUID, err := srv.getCommunityProfile("artisan-test-uuid")
+	if err != nil || byUUID.Nickname != "artisan-tester" {
+		t.Fatalf("failed getCommunityProfile by UUID: %v", err)
+	}
+
+	// Test findProfileByToken
+	found, err := srv.findProfileByToken(rawToken)
+	if err != nil {
+		t.Fatalf("findProfileByToken error: %v", err)
+	}
+	if found.GetID() != "artisan-test-id" {
+		t.Fatalf("expected ID artisan-test-id, got %s", found.GetID())
+	}
+
+	// Test with invalid token
+	_, err = srv.findProfileByToken("egg_pat_invalid")
+	if err == nil {
+		t.Fatalf("expected error for invalid token, got nil")
+	}
+
+	// Test deleteCommunityProfile by UUID
+	if err := srv.deleteCommunityProfile("artisan-test-uuid"); err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+	_, err = srv.getCommunityProfile("artisan-test-id")
+	if err == nil {
+		t.Fatalf("expected error after delete, got nil")
+	}
+}

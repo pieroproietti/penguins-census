@@ -86,7 +86,38 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 	verW := len("Version")
 	sumW := len("Sysinstalls")
 
-	if len(list) == 0 {
+	type renderedRow struct {
+		Country       string
+		Distro        string
+		Desktop       string
+		DisplayServer string
+		Arch          string
+		EggsVersion   string
+		SumSysinstall int
+	}
+
+	rows := make([]renderedRow, 0, len(list))
+	for _, item := range list {
+		distroDisplay := item.Distro
+		if item.ArtisanNickname != "" {
+			nick := item.ArtisanNickname
+			if !strings.HasPrefix(nick, "@") {
+				nick = "@" + nick
+			}
+			distroDisplay = fmt.Sprintf("%s (%s)", item.Distro, nick)
+		}
+		rows = append(rows, renderedRow{
+			Country:       item.Country,
+			Distro:        distroDisplay,
+			Desktop:       item.Desktop,
+			DisplayServer: item.DisplayServer,
+			Arch:          item.Arch,
+			EggsVersion:   item.EggsVersion,
+			SumSysinstall: item.SumSysinstall,
+		})
+	}
+
+	if len(rows) == 0 {
 		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*s |\n",
 			countryW, "Country",
 			distroW, "Distro",
@@ -114,7 +145,7 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 		return
 	}
 
-	for _, item := range list {
+	for _, item := range rows {
 		if len(item.Country) > countryW {
 			countryW = len(item.Country)
 		}
@@ -152,7 +183,7 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 		strings.Repeat("-", verW),
 		strings.Repeat("-", sumW-1))
 
-	for _, item := range list {
+	for _, item := range rows {
 		fmt.Fprintf(buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %*d |\n",
 			countryW, item.Country,
 			distroW, item.Distro,
@@ -186,7 +217,15 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 		if date == "" {
 			date = "-"
 		}
-		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-8s | %-10s |\n", date, ev.Country, ev.Distro, ev.Desktop, ev.DisplayServer, rem, sys)
+		distroDisplay := ev.Distro
+		if ev.ArtisanNickname != "" {
+			nick := ev.ArtisanNickname
+			if !strings.HasPrefix(nick, "@") {
+				nick = "@" + nick
+			}
+			distroDisplay = fmt.Sprintf("%s (%s)", ev.Distro, nick)
+		}
+		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-8s | %-10s |\n", date, ev.Country, distroDisplay, ev.Desktop, ev.DisplayServer, rem, sys)
 	}
 	buf.WriteString("\n")
 }
@@ -197,18 +236,21 @@ func renderCommunityText(artisans []ArtisanProfile) string {
 	fmt.Fprintf(&buf, "- Total Artisans: %d\n\n", len(artisans))
 
 	type tableRow struct {
-		Nickname string
-		Location string
-		Distro   string
-		Source   string
-		Contacts string
+		Nickname  string
+		Location  string
+		Distro    string
+		Machines  string
+		Remasters string
+		Installs  string
+		Source    string
+		Contacts  string
 	}
 
 	rows := make([]tableRow, 0, len(artisans))
 	for _, a := range artisans {
 		nick := strings.TrimSpace(a.Nickname)
 		if nick == "" {
-			nick = a.UUID
+			nick = a.GetID()
 			if len(nick) > 8 {
 				nick = nick[:8]
 			}
@@ -251,24 +293,39 @@ func renderCommunityText(artisans []ArtisanProfile) string {
 		}
 
 		rows = append(rows, tableRow{
-			Nickname: nick,
-			Location: loc,
-			Distro:   distro,
-			Source:   source,
-			Contacts: contactStr,
+			Nickname:  nick,
+			Location:  loc,
+			Distro:    distro,
+			Machines:  fmt.Sprintf("%d", a.MachinesCount),
+			Remasters: fmt.Sprintf("%d", a.RemasterCount),
+			Installs:  fmt.Sprintf("%d", a.InstallsCount),
+			Source:    source,
+			Contacts:  contactStr,
 		})
 	}
 
 	nickW := len("Nickname")
 	locW := len("Location")
 	distroW := len("Ultima Distro")
+	machW := len("Machines")
+	remW := len("Remasters")
+	instW := len("Installs")
 	sourceW := len("Source URL")
 	contactW := len("Contatti")
 
 	if len(rows) == 0 {
-		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, "Nickname", locW, "Location", distroW, "Ultima Distro", sourceW, "Source URL", contactW, "Contatti")
-		fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|\n", strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW), strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
-		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n\n", nickW, "(no data)", locW, "-", distroW, "-", sourceW, "-", contactW, "-")
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s |\n",
+			nickW, "Nickname", locW, "Location", distroW, "Ultima Distro",
+			machW, "Machines", remW, "Remasters", instW, "Installs",
+			sourceW, "Source URL", contactW, "Contatti")
+		fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|\n",
+			strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW),
+			strings.Repeat("-", machW), strings.Repeat("-", remW), strings.Repeat("-", instW),
+			strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s |\n\n",
+			nickW, "(no data)", locW, "-", distroW, "-",
+			machW, "0", remW, "0", instW, "0",
+			sourceW, "-", contactW, "-")
 		return buf.String()
 	}
 
@@ -282,6 +339,15 @@ func renderCommunityText(artisans []ArtisanProfile) string {
 		if len(r.Distro) > distroW {
 			distroW = len(r.Distro)
 		}
+		if len(r.Machines) > machW {
+			machW = len(r.Machines)
+		}
+		if len(r.Remasters) > remW {
+			remW = len(r.Remasters)
+		}
+		if len(r.Installs) > instW {
+			instW = len(r.Installs)
+		}
 		if len(r.Source) > sourceW {
 			sourceW = len(r.Source)
 		}
@@ -290,13 +356,51 @@ func renderCommunityText(artisans []ArtisanProfile) string {
 		}
 	}
 
-	fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, "Nickname", locW, "Location", distroW, "Ultima Distro", sourceW, "Source URL", contactW, "Contatti")
-	fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|\n", strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW), strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
+	fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s | %-*s |\n",
+		nickW, "Nickname", locW, "Location", distroW, "Ultima Distro",
+		machW, "Machines", remW, "Remasters", instW, "Installs",
+		sourceW, "Source URL", contactW, "Contatti")
+	fmt.Fprintf(&buf, "|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|-%s-|\n",
+		strings.Repeat("-", nickW), strings.Repeat("-", locW), strings.Repeat("-", distroW),
+		strings.Repeat("-", machW), strings.Repeat("-", remW), strings.Repeat("-", instW),
+		strings.Repeat("-", sourceW), strings.Repeat("-", contactW))
 
 	for _, r := range rows {
-		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %-*s | %-*s |\n", nickW, r.Nickname, locW, r.Location, distroW, r.Distro, sourceW, r.Source, contactW, r.Contacts)
+		fmt.Fprintf(&buf, "| %-*s | %-*s | %-*s | %*s | %*s | %*s | %-*s | %-*s |\n",
+			nickW, r.Nickname, locW, r.Location, distroW, r.Distro,
+			machW, r.Machines, remW, r.Remasters, instW, r.Installs,
+			sourceW, r.Source, contactW, r.Contacts)
 	}
 	buf.WriteString("\n")
+
+	hasCatalog := false
+	for _, a := range artisans {
+		if len(a.LiveDistros) > 0 {
+			hasCatalog = true
+			break
+		}
+	}
+	if hasCatalog {
+		buf.WriteString("### Live Distro Catalogs\n\n")
+		for _, a := range artisans {
+			if len(a.LiveDistros) == 0 {
+				continue
+			}
+			nick := strings.TrimSpace(a.Nickname)
+			if nick == "" {
+				nick = a.GetID()
+			}
+			if !strings.HasPrefix(nick, "@") {
+				nick = "@" + nick
+			}
+			fmt.Fprintf(&buf, "#### %s\n\n", nick)
+			for _, ld := range a.LiveDistros {
+				badge := formatDistroBadge(DistroInfo{ID: ld.DistroName, Release: ld.Version}, SystemInfo{Arch: ld.Arch, Desktop: ld.Desktop})
+				fmt.Fprintf(&buf, "- %s: %d builds (last seen: %s)\n", badge, ld.Count, formatEventDate(ld.LastSeen))
+			}
+			buf.WriteString("\n")
+		}
+	}
 
 	return buf.String()
 }

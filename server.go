@@ -167,6 +167,27 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	rec.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	rec.Country = s.resolveCountry(r)
 
+	// Verify artisan token if present
+	rawToken := strings.TrimSpace(r.Header.Get("X-Eggs-Artisan-Token"))
+	if rawToken == "" {
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			rawToken = strings.TrimSpace(auth[7:])
+		}
+	}
+	if rawToken != "" {
+		s.mu.Lock()
+		profile, err := s.findProfileByToken(rawToken)
+		s.mu.Unlock()
+		if err == nil && profile != nil {
+			rec.ArtisanID = profile.GetID()
+		} else {
+			rec.ArtisanID = ""
+		}
+	} else {
+		rec.ArtisanID = ""
+	}
+
 	line, err := json.Marshal(rec)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -327,8 +348,23 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 
 	// Support wrapping inside "community": { ... }
 	if raw.Community != nil {
+		if raw.ID == "" {
+			raw.ID = raw.Community.ID
+		}
 		if raw.UUID == "" {
 			raw.UUID = raw.Community.UUID
+		}
+		if raw.AuthType == "" {
+			raw.AuthType = raw.Community.AuthType
+		}
+		if raw.AuthID == "" {
+			raw.AuthID = raw.Community.AuthID
+		}
+		if raw.TokenHash == "" {
+			raw.TokenHash = raw.Community.TokenHash
+		}
+		if raw.Token == "" {
+			raw.Token = raw.Community.Token
 		}
 		if raw.Nickname == "" {
 			raw.Nickname = raw.Community.Nickname
@@ -368,18 +404,31 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		}
 	}
 
+	finalID := strings.TrimSpace(raw.ID)
 	finalUUID := strings.TrimSpace(raw.UUID)
+	if finalID == "" && finalUUID != "" {
+		finalID = finalUUID
+	}
+	if finalUUID == "" && finalID != "" {
+		finalUUID = finalID
+	}
+
 	if pathUUID != "" {
-		if finalUUID != "" && !strings.EqualFold(finalUUID, pathUUID) {
+		if (finalID != "" && !strings.EqualFold(finalID, pathUUID)) && (finalUUID != "" && !strings.EqualFold(finalUUID, pathUUID)) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"error":"uuid in path does not match uuid in payload"}`))
 			return
 		}
-		finalUUID = pathUUID
+		if finalID == "" {
+			finalID = pathUUID
+		}
+		if finalUUID == "" {
+			finalUUID = pathUUID
+		}
 	}
 
-	if !isValidUUID(finalUUID) {
+	if !isValidUUID(finalID) && !isValidUUID(finalUUID) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"valid uuid is required"}`))
@@ -436,8 +485,17 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		defaultEnabled = *raw.Enabled
 	}
 
+	tokenHash := strings.TrimSpace(raw.TokenHash)
+	if tokenHash == "" && strings.TrimSpace(raw.Token) != "" {
+		tokenHash = HashArtisanToken(strings.TrimSpace(raw.Token))
+	}
+
 	profile := CommunityProfile{
+		ID:        finalID,
 		UUID:      finalUUID,
+		AuthType:  strings.TrimSpace(raw.AuthType),
+		AuthID:    strings.TrimSpace(raw.AuthID),
+		TokenHash: tokenHash,
 		Nickname:  strings.TrimSpace(raw.Nickname),
 		Location:  strings.TrimSpace(raw.Location),
 		Bio:       strings.TrimSpace(raw.Bio),
@@ -464,6 +522,7 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 	resp, _ := json.Marshal(map[string]string{
 		"status": "ok",
 		"uuid":   profile.UUID,
+		"id":     profile.GetID(),
 	})
 	_, _ = w.Write(resp)
 }

@@ -32,7 +32,11 @@ var (
 )
 
 type CommunityProfile struct {
+	ID        string            `json:"id,omitempty"`
 	UUID      string            `json:"uuid"`
+	AuthType  string            `json:"auth_type,omitempty"`
+	AuthID    string            `json:"auth_id,omitempty"`
+	TokenHash string            `json:"token_hash,omitempty"`
 	Nickname  string            `json:"nickname,omitempty"`
 	Location  string            `json:"location,omitempty"`
 	Bio       string            `json:"bio,omitempty"`
@@ -41,6 +45,22 @@ type CommunityProfile struct {
 	SourceURL string            `json:"source_url,omitempty"`
 	Enabled   *bool             `json:"enabled,omitempty"`
 	UpdatedAt string            `json:"updated_at,omitempty"`
+}
+
+func (p CommunityProfile) GetID() string {
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.UUID
+}
+
+type ArtisanLiveSummary struct {
+	DistroName string `json:"distro_name"`
+	Version    string `json:"version,omitempty"`
+	Desktop    string `json:"desktop,omitempty"`
+	Arch       string `json:"arch,omitempty"`
+	Count      int    `json:"count"`
+	LastSeen   string `json:"last_seen,omitempty"`
 }
 
 type ArtisanRemasterInfo struct {
@@ -53,6 +73,7 @@ type ArtisanRemasterInfo struct {
 }
 
 type ArtisanProfile struct {
+	ID             string               `json:"id,omitempty"`
 	UUID           string               `json:"uuid"`
 	Nickname       string               `json:"nickname,omitempty"`
 	Location       string               `json:"location,omitempty"`
@@ -64,8 +85,18 @@ type ArtisanProfile struct {
 	UpdatedAt      string               `json:"updated_at,omitempty"`
 	Country        string               `json:"country,omitempty"`
 	LastRemasterAt string               `json:"last_remaster_at,omitempty"`
-	RemasterCount  int                  `json:"remaster_count,omitempty"`
+	MachinesCount  int                  `json:"machines_count"`
+	RemasterCount  int                  `json:"remaster_count"`
+	InstallsCount  int                  `json:"installs_count"`
+	LiveDistros    []ArtisanLiveSummary `json:"live_distros,omitempty"`
 	LatestRemaster *ArtisanRemasterInfo `json:"latest_remaster,omitempty"`
+}
+
+func (a ArtisanProfile) GetID() string {
+	if a.ID != "" {
+		return a.ID
+	}
+	return a.UUID
 }
 
 type SocialLink struct {
@@ -75,7 +106,12 @@ type SocialLink struct {
 }
 
 type rawCommunityPayload struct {
+	ID            string               `json:"id"`
 	UUID          string               `json:"uuid"`
+	AuthType      string               `json:"auth_type"`
+	AuthID        string               `json:"auth_id"`
+	TokenHash     string               `json:"token_hash"`
+	Token         string               `json:"token"`
 	Nickname      string               `json:"nickname"`
 	Location      string               `json:"location"`
 	Bio           string               `json:"bio"`
@@ -96,6 +132,7 @@ type CensusRecord struct {
 	Country     string      `json:"country"`
 	UUID        string      `json:"uuid"`
 	ParentID    string      `json:"parent_id,omitempty"`
+	ArtisanID   string      `json:"artisan_id,omitempty"`
 	EggsVersion string      `json:"eggs_version"`
 	Action      string      `json:"action"`
 	Distro      DistroInfo  `json:"distro"`
@@ -116,13 +153,15 @@ type RecentEvent struct {
 }
 
 type TopInstallation struct {
-	Country       string `json:"country"`
-	Distro        string `json:"distro"`
-	Desktop       string `json:"desktop"`
-	DisplayServer string `json:"display_server"`
-	Arch          string `json:"arch"`
-	EggsVersion   string `json:"eggs_version"`
-	SumSysinstall int    `json:"sum_sysinstall"`
+	Country         string `json:"country"`
+	Distro          string `json:"distro"`
+	Desktop         string `json:"desktop"`
+	DisplayServer   string `json:"display_server"`
+	Arch            string `json:"arch"`
+	EggsVersion     string `json:"eggs_version"`
+	SumSysinstall   int    `json:"sum_sysinstall"`
+	ArtisanNickname string `json:"artisan_nickname,omitempty"`
+	ArtisanURL      string `json:"artisan_url,omitempty"`
 }
 
 type RepoClientStats struct {

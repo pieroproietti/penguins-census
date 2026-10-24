@@ -82,7 +82,9 @@
           <th>Artisan</th>
           <th>Location</th>
           <th>Latest ISO</th>
+          <th class="num">Machines</th>
           <th class="num">Remasters</th>
+          <th class="num">Installs</th>
           <th>Source</th>
         </tr>
       </thead>
@@ -91,8 +93,13 @@
         <tr>
           <td><a href="{{.Link}}" target="_blank" rel="noopener noreferrer" style="color:var(--accent); font-weight:600; text-decoration:none;">{{.Nickname}}</a></td>
           <td>{{if .LocationDisplay}}{{.LocationDisplay}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td>{{if .ISOBadge}}<span class="iso-badge" style="font-size:0.8rem; padding:0.15rem 0.45rem;">{{.ISOBadge}}</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td>
+            {{if .ISOBadge}}<span class="iso-badge" style="font-size:0.8rem; padding:0.15rem 0.45rem;">{{.ISOBadge}}</span>{{else}}<span class="muted">&mdash;</span>{{end}}
+            {{if .LiveDistrosSummary}}<div class="muted" style="font-size:0.75rem; margin-top:0.2rem;">{{.LiveDistrosSummary}}</div>{{end}}
+          </td>
+          <td class="num">{{.MachinesCount}}</td>
           <td class="num">{{.RemasterCount}}</td>
+          <td class="num">{{.InstallsCount}}</td>
           <td>{{if .SourceURL}}<a href="{{.SourceURL}}" target="_blank" rel="noopener noreferrer" class="btn" style="padding:0.2rem 0.5rem; font-size:0.75rem;">Source &rarr;</a>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         </tr>
         {{end}}
@@ -123,7 +130,12 @@
         {{range .TopInstallations}}
         <tr>
           <td>{{.Country}}</td>
-          <td>{{.Distro}}</td>
+          <td>
+            {{.Distro}}
+            {{if .ArtisanNickname}}
+            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{end}}
+          </td>
           <td>{{.Desktop}}</td>
           <td>{{.DisplayServer}}</td>
           <td>{{.Arch}}</td>

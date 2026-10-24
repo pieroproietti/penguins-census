@@ -413,3 +413,105 @@ func TestRenderViewsEmptySummary(t *testing.T) {
 		t.Errorf("expected empty message in community html")
 	}
 }
+
+func TestRenderArtisanStatsAndCatalog(t *testing.T) {
+	artisans := []ArtisanProfile{
+		{
+			ID:            "distro-artisan",
+			UUID:          "distro-artisan",
+			Nickname:      "masterbuilder",
+			Location:      "Milano, IT",
+			Country:       "IT",
+			MachinesCount: 3,
+			RemasterCount: 5,
+			InstallsCount: 12,
+			LiveDistros: []ArtisanLiveSummary{
+				{
+					DistroName: "debian",
+					Version:    "13",
+					Desktop:    "xfce",
+					Arch:       "amd64",
+					Count:      3,
+					LastSeen:   "2026-10-24T10:00:00Z",
+				},
+				{
+					DistroName: "ubuntu",
+					Version:    "24.04",
+					Desktop:    "gnome",
+					Arch:       "arm64",
+					Count:      2,
+					LastSeen:   "2026-10-24T11:00:00Z",
+				},
+			},
+			LatestRemaster: &ArtisanRemasterInfo{
+				Distro:         DistroInfo{ID: "debian", Release: "13"},
+				System:         SystemInfo{Arch: "amd64", Desktop: "xfce"},
+				Country:        "IT",
+				LastRemasterAt: "2026-10-24T10:00:00Z",
+				Count:          5,
+			},
+		},
+	}
+
+	// 1. Test HTML rendering
+	html := renderCommunityHTML(artisans)
+	for _, expected := range []string{
+		"3 machines",
+		"5 builds",
+		"12 installs",
+		"Live Distros Catalog:",
+		"debian 13 • amd64 • xfce",
+		"ubuntu 24.04 • arm64 • gnome",
+	} {
+		if !strings.Contains(html, expected) {
+			t.Errorf("expected community HTML to contain %q", expected)
+		}
+	}
+
+	// 2. Test Text rendering
+	txt := renderCommunityText(artisans)
+	for _, expected := range []string{
+		"Machines",
+		"Remasters",
+		"Installs",
+		"3",
+		"5",
+		"12",
+		"Live Distro Catalogs",
+		"debian 13 • amd64 • xfce: 3 builds",
+		"ubuntu 24.04 • arm64 • gnome: 2 builds",
+	} {
+		if !strings.Contains(txt, expected) {
+			t.Errorf("expected community text to contain %q", expected)
+		}
+	}
+
+	// 3. Test HTML Summary rendering
+	sum := CensusSummary{
+		TotalEvents:    10,
+		UniqueMachines: 5,
+		Artisans:       artisans,
+		TopInstallations: []TopInstallation{
+			{
+				Country:         "IT",
+				Distro:          "debian",
+				Desktop:         "xfce",
+				DisplayServer:   "x11",
+				Arch:            "amd64",
+				EggsVersion:     "10.1.0",
+				SumSysinstall:   12,
+				ArtisanNickname: "masterbuilder",
+				ArtisanURL:      "https://example.com/builder",
+			},
+		},
+		ByAction: map[string]int{"remaster": 5, "sysinstall": 12},
+		ByDistro: map[string]int{"debian": 10},
+	}
+	sumHTML := renderHTMLSummary(sum)
+	if !strings.Contains(sumHTML, "masterbuilder") {
+		t.Errorf("expected HTML summary to contain artisan nickname")
+	}
+	if !strings.Contains(sumHTML, "Machines") || !strings.Contains(sumHTML, "Installs") {
+		t.Errorf("expected HTML summary artisan table to have Machines and Installs columns")
+	}
+}
