@@ -47,7 +47,19 @@ func renderTextSummary(s CensusSummary) string {
 	fmt.Fprintf(&buf, "- Remasters/Clones:    %d/%d\n", s.ByAction["remaster"], s.RemasterClones)
 	fmt.Fprintf(&buf, "- Sysinstalls/Clones:  %d/%d\n\n", s.ByAction["sysinstall"], s.SysinstallClones)
 
-	writeMarkdownRecentEvents(&buf, s.RecentEvents)
+	recentSys := s.RecentSysinstalls
+	recentRem := s.RecentRemasters
+	if len(recentSys) == 0 && len(recentRem) == 0 && len(s.RecentEvents) > 0 {
+		for _, ev := range s.RecentEvents {
+			if ev.Sysinstall {
+				recentSys = append(recentSys, ev)
+			} else if ev.Remaster {
+				recentRem = append(recentRem, ev)
+			}
+		}
+	}
+	writeMarkdownRecentEvents(&buf, "Recent Sysinstalls", recentSys)
+	writeMarkdownRecentEvents(&buf, "Recent Remasters", recentRem)
 
 	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeMarkdownTable(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
@@ -202,22 +214,18 @@ func writeMarkdownTopInstallations(buf *bytes.Buffer, list []TopInstallation) {
 	buf.WriteString("\n")
 }
 
-func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
-	fmt.Fprintf(buf, "### Recent Events\n\n")
-	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Display Server | Version | Remaster | Sysinstall |\n")
-	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|----------------|---------|:--------:|:----------:|\n")
+func writeMarkdownRecentEvents(buf *bytes.Buffer, title string, events []RecentEvent) {
+	fmt.Fprintf(buf, "### %s\n\n", title)
+	fmt.Fprintf(buf, "| Date                | Country | Distro | Desktop | Display Server | Version | Clone |\n")
+	fmt.Fprintf(buf, "|---------------------|---------|--------|---------|----------------|---------|:-----:|\n")
 	if len(events) == 0 {
-		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -              | -       | -        | -          |\n\n")
+		fmt.Fprintf(buf, "| (no data)           | -       | -      | -       | -              | -       | -     |\n\n")
 		return
 	}
 	for _, ev := range events {
-		rem := "-"
-		if ev.Remaster {
-			rem = "✓"
-		}
-		sys := "-"
-		if ev.Sysinstall {
-			sys = "✓"
+		clone := "-"
+		if ev.Clone {
+			clone = "✓"
 		}
 		date := formatTimeAgo(ev.Date)
 		if date == "" {
@@ -235,7 +243,7 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 			}
 			distroDisplay = fmt.Sprintf("%s (%s)", ev.Distro, nick)
 		}
-		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-7s | %-8s | %-10s |\n", date, ev.Country, distroDisplay, ev.Desktop, ev.DisplayServer, ver, rem, sys)
+		fmt.Fprintf(buf, "| %-19s | %-7s | %-6s | %-7s | %-14s | %-7s | %-5s |\n", date, ev.Country, distroDisplay, ev.Desktop, ev.DisplayServer, ver, clone)
 	}
 	buf.WriteString("\n")
 }

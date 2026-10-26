@@ -31,8 +31,8 @@
     <div class="card" id="sysinstalls-clones"><span id="sysinstalls" class="anchor-alias"></span><span id="installations" class="anchor-alias"></span><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><span id="sysinstall-clone" class="anchor-alias"></span><span id="clones" class="anchor-alias"></span><span id="clone" class="anchor-alias"></span><div class="card-label">Sysinstalls/Clones</div><div class="card-value">{{.SysinstallCount}}/{{.SysinstallClones}}</div></div>
   </div>
 
-  <section class="panel" id="recent-events">
-    <h2><a href="#recent-events" class="anchor-link">Recent Events</a></h2>
+  <section class="panel" id="recent-sysinstalls">
+    <h2><a href="#recent-sysinstalls" class="anchor-link">Recent Sysinstalls</a></h2>
     <table>
       <thead>
         <tr>
@@ -42,15 +42,14 @@
           <th>Desktop</th>
           <th>Display Server</th>
           <th>Version</th>
-          <th class="center">Remaster</th>
-          <th class="center">Sysinstall</th>
+          <th class="center">Clone</th>
         </tr>
       </thead>
       <tbody>
-        {{if not .RecentEvents}}
-        <tr><td colspan="8" class="empty">No events recorded yet</td></tr>
+        {{if not .RecentSysinstalls}}
+        <tr><td colspan="7" class="empty">No sysinstalls recorded yet</td></tr>
         {{else}}
-        {{range .RecentEvents}}
+        {{range .RecentSysinstalls}}
         <tr>
           <td>{{if .Date}}{{.Date}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
           <td>{{.Country}}</td>
@@ -63,8 +62,46 @@
           <td>{{.Desktop}}</td>
           <td>{{.DisplayServer}}</td>
           <td>{{if .EggsVersion}}{{.EggsVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td class="center">{{if .Remaster}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td class="center">{{if .Sysinstall}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="center">{{if .Clone}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        </tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="recent-remasters">
+    <h2><a href="#recent-remasters" class="anchor-link">Recent Remasters</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th>Display Server</th>
+          <th>Version</th>
+          <th class="center">Clone</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{if not .RecentRemasters}}
+        <tr><td colspan="7" class="empty">No remasters recorded yet</td></tr>
+        {{else}}
+        {{range .RecentRemasters}}
+        <tr>
+          <td>{{if .Date}}{{.Date}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td>{{.Country}}</td>
+          <td>
+            {{.Distro}}
+            {{if .ArtisanNickname}}
+            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{end}}
+          </td>
+          <td>{{.Desktop}}</td>
+          <td>{{.DisplayServer}}</td>
+          <td>{{if .EggsVersion}}{{.EggsVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="center">{{if .Clone}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         </tr>
         {{end}}
         {{end}}

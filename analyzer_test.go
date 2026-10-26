@@ -134,15 +134,16 @@ func TestAnalyzeAccessLogs(t *testing.T) {
 		}
 	}
 
-	// Verify order: Recent Events is at the top, followed by Top Sysinstalls and Unique IP last 15 days
+	// Verify order: Recent Sysinstalls and Recent Remasters are at the top, followed by Top Sysinstalls and Unique IP last 15 days
 	topIdx := strings.Index(htmlRep, `id="top-sysinstalls"`)
-	recentIdx := strings.Index(htmlRep, `id="recent-events"`)
+	recentSysIdx := strings.Index(htmlRep, `id="recent-sysinstalls"`)
+	recentRemIdx := strings.Index(htmlRep, `id="recent-remasters"`)
 	uniqueIPIdx := strings.Index(htmlRep, `id="unique-ips"`)
-	if topIdx == -1 || recentIdx == -1 || uniqueIPIdx == -1 {
-		t.Fatalf("expected top-sysinstalls, recent-events, and unique-ips panels in HTML")
+	if topIdx == -1 || recentSysIdx == -1 || recentRemIdx == -1 || uniqueIPIdx == -1 {
+		t.Fatalf("expected top-sysinstalls, recent-sysinstalls, recent-remasters, and unique-ips panels in HTML")
 	}
-	if !(recentIdx < topIdx && uniqueIPIdx > topIdx) {
-		t.Errorf("expected order: recent-events < top-sysinstalls < unique-ips, got %d, %d, %d", recentIdx, topIdx, uniqueIPIdx)
+	if !(recentSysIdx < recentRemIdx && recentRemIdx < topIdx && uniqueIPIdx > topIdx) {
+		t.Errorf("expected order: recent-sysinstalls < recent-remasters < top-sysinstalls < unique-ips, got %d, %d, %d, %d", recentSysIdx, recentRemIdx, topIdx, uniqueIPIdx)
 	}
 
 	// Verify Text summary includes the appended repo-clients section at the end
@@ -159,9 +160,10 @@ func TestAnalyzeAccessLogs(t *testing.T) {
 		}
 	}
 	txtTopIdx := strings.Index(txtRep, "### Top 10 Sysinstalls")
-	txtRecentIdx := strings.Index(txtRep, "### Recent Events")
+	txtRecentSysIdx := strings.Index(txtRep, "### Recent Sysinstalls")
+	txtRecentRemIdx := strings.Index(txtRep, "### Recent Remasters")
 	txtUniqueIPIdx := strings.Index(txtRep, "### Unique IP last 15 days")
-	if !(txtRecentIdx < txtTopIdx && txtUniqueIPIdx > txtTopIdx) {
-		t.Errorf("expected text order: Recent Events < Top Sysinstalls < Unique IP last 15 days, got %d, %d, %d", txtRecentIdx, txtTopIdx, txtUniqueIPIdx)
+	if !(txtRecentSysIdx < txtRecentRemIdx && txtRecentRemIdx < txtTopIdx && txtUniqueIPIdx > txtTopIdx) {
+		t.Errorf("expected text order: Recent Sysinstalls < Recent Remasters < Top Sysinstalls < Unique IP last 15 days, got %d, %d, %d, %d", txtRecentSysIdx, txtRecentRemIdx, txtTopIdx, txtUniqueIPIdx)
 	}
 }

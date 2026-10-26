@@ -148,6 +148,7 @@ type RecentEvent struct {
 	Desktop         string `json:"desktop"`
 	DisplayServer   string `json:"display_server"`
 	EggsVersion     string `json:"eggs_version,omitempty"`
+	Clone           bool   `json:"clone"`
 	Remaster        bool   `json:"remaster"`
 	Sysinstall      bool   `json:"sysinstall"`
 	ArtisanNickname string `json:"artisan_nickname,omitempty"`
@@ -190,11 +191,13 @@ type CensusSummary struct {
 	TotalDistros     int                  `json:"total_distros"`
 	CountryCount     int                  `json:"country,omitempty"`
 	DistroCount      int                  `json:"distro,omitempty"`
-	RemasterClones   int                  `json:"remaster_clones"`
-	SysinstallClones int                  `json:"sysinstall_clones"`
-	CoexistCount     int                  `json:"coexist_count"`
-	RecentEvents     []RecentEvent        `json:"recent_events"`
-	TopInstallations []TopInstallation    `json:"top_installations"`
+	RemasterClones    int                  `json:"remaster_clones"`
+	SysinstallClones  int                  `json:"sysinstall_clones"`
+	CoexistCount      int                  `json:"coexist_count"`
+	RecentEvents      []RecentEvent        `json:"recent_events"`
+	RecentSysinstalls []RecentEvent        `json:"recent_sysinstalls"`
+	RecentRemasters   []RecentEvent        `json:"recent_remasters"`
+	TopInstallations  []TopInstallation    `json:"top_installations"`
 	Artisans         []ArtisanProfile     `json:"artisans,omitempty"`
 	RepoClients      *RepoAnalysisSummary `json:"repo_clients,omitempty"`
 	ByAction         map[string]int       `json:"by_action"`

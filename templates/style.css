@@ -235,7 +235,8 @@ th {
   color: var(--muted);
 }
 
-#recent-events,
+#recent-sysinstalls,
+#recent-remasters,
 #top-sysinstalls {
   margin-bottom: 1.75rem;
 }

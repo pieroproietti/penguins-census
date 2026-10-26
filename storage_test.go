@@ -209,6 +209,18 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 	if len(sum.RecentEvents) != 10 {
 		t.Fatalf("expected 10 recent events, got %d", len(sum.RecentEvents))
 	}
+	if len(sum.RecentSysinstalls) != 6 {
+		t.Fatalf("expected 6 recent sysinstalls, got %d", len(sum.RecentSysinstalls))
+	}
+	if len(sum.RecentRemasters) != 6 {
+		t.Fatalf("expected 6 recent remasters, got %d", len(sum.RecentRemasters))
+	}
+	if sum.RecentSysinstalls[0].Distro != "popos" || !sum.RecentSysinstalls[0].Sysinstall {
+		t.Errorf("expected 1st recent sysinstall to be popos, got %+v", sum.RecentSysinstalls[0])
+	}
+	if sum.RecentRemasters[0].Distro != "mint" || !sum.RecentRemasters[0].Remaster {
+		t.Errorf("expected 1st recent remaster to be mint, got %+v", sum.RecentRemasters[0])
+	}
 
 	// 1st recent event should be popos (from 12th event)
 	if sum.RecentEvents[0].Distro != "popos" || sum.RecentEvents[0].Desktop != "desktop12" ||
@@ -238,35 +250,39 @@ func TestRecentEventsLimitAndOrder(t *testing.T) {
 		t.Errorf("expected 10th recent event to be arch/remaster with version 10.0, got %+v", sum.RecentEvents[9])
 	}
 
-	// Verify HTML contains the recent events table with headers and rows
+	// Verify HTML contains the recent sysinstalls and recent remasters tables with headers and rows
 	reqHTML := httptest.NewRequest(http.MethodGet, "/api/census?format=html", nil)
 	wHTML := httptest.NewRecorder()
 	srv.ServeHTTP(wHTML, reqHTML)
 	htmlBody := wHTML.Body.String()
 	for _, expected := range []string{
-		"Recent Events",
+		"Recent Sysinstalls",
+		"Recent Remasters",
+		`id="recent-sysinstalls"`,
+		`id="recent-remasters"`,
 		"<th>Date</th>",
 		"<th>Version</th>",
+		"<th class=\"center\">Clone</th>",
 		"popos",
 		"mint",
 		"kali",
 		"desktop12",
 		"10.0",
-		"&#10003;", // checkmark for remaster/sysinstall
 	} {
 		if !strings.Contains(htmlBody, expected) {
 			t.Errorf("expected HTML to contain %q", expected)
 		}
 	}
 
-	// Verify text / markdown output contains Date header
+	// Verify text / markdown output contains Date and Clone headers
 	reqTxt := httptest.NewRequest(http.MethodGet, "/api/census?format=txt", nil)
 	wTxt := httptest.NewRecorder()
 	srv.ServeHTTP(wTxt, reqTxt)
 	txtBody := wTxt.Body.String()
 	for _, expected := range []string{
-		"### Recent Events",
-		"| Date                | Country | Distro | Desktop | Display Server | Version | Remaster | Sysinstall |",
+		"### Recent Sysinstalls",
+		"### Recent Remasters",
+		"| Date                | Country | Distro | Desktop | Display Server | Version | Clone |",
 		"popos",
 		"10.0",
 		"mint",
@@ -348,12 +364,13 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 		}
 	}
 
-	// Verify Recent Events appears right after Sysinstalls/Clones and before Top 10 Sysinstalls
+	// Verify Recent Sysinstalls and Recent Remasters appear right after Sysinstalls/Clones and before Top 10 Sysinstalls
 	idxSysClones := strings.Index(txtBody, "- Sysinstalls/Clones:")
 	idxTop := strings.Index(txtBody, "### Top 10 Sysinstalls")
-	idxRecent := strings.Index(txtBody, "### Recent Events")
-	if idxRecent == -1 || idxTop == -1 || idxSysClones == -1 || idxRecent <= idxSysClones || idxRecent >= idxTop {
-		t.Errorf("expected Recent Events to appear right after Sysinstalls/Clones and before Top 10 Sysinstalls in text summary")
+	idxRecentSys := strings.Index(txtBody, "### Recent Sysinstalls")
+	idxRecentRem := strings.Index(txtBody, "### Recent Remasters")
+	if idxRecentSys == -1 || idxRecentRem == -1 || idxTop == -1 || idxSysClones == -1 || idxRecentSys <= idxSysClones || idxRecentRem <= idxRecentSys || idxRecentRem >= idxTop {
+		t.Errorf("expected Recent Sysinstalls and Recent Remasters to appear right after Sysinstalls/Clones and before Top 10 Sysinstalls in text summary")
 	}
 
 	// 3. Verify HTML output
@@ -364,9 +381,10 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 
 	idxHTMLSysClones := strings.Index(htmlBody, `id="sysinstalls-clones"`)
 	idxHTMLTop := strings.Index(htmlBody, `id="top-sysinstalls"`)
-	idxHTMLRecent := strings.Index(htmlBody, `id="recent-events"`)
-	if idxHTMLSysClones == -1 || idxHTMLTop == -1 || idxHTMLRecent == -1 || idxHTMLRecent <= idxHTMLSysClones || idxHTMLRecent >= idxHTMLTop {
-		t.Errorf("expected recent-events panel to appear right after sysinstalls-clones card and before top-sysinstalls panel in HTML")
+	idxHTMLRecentSys := strings.Index(htmlBody, `id="recent-sysinstalls"`)
+	idxHTMLRecentRem := strings.Index(htmlBody, `id="recent-remasters"`)
+	if idxHTMLSysClones == -1 || idxHTMLTop == -1 || idxHTMLRecentSys == -1 || idxHTMLRecentRem == -1 || idxHTMLRecentSys <= idxHTMLSysClones || idxHTMLRecentRem <= idxHTMLRecentSys || idxHTMLRecentRem >= idxHTMLTop {
+		t.Errorf("expected recent-sysinstalls and recent-remasters panels to appear right after sysinstalls-clones card and before top-sysinstalls panel in HTML")
 	}
 
 	if !strings.Contains(htmlBody, `id="top-sysinstalls"`) {

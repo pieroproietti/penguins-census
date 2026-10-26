@@ -154,8 +154,10 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Sysinstalls",
 				"Remasters/Clones",
 				"Sysinstalls/Clones",
-				"Recent Events",
-				"id=\"recent-events\"",
+				"Recent Sysinstalls",
+				"id=\"recent-sysinstalls\"",
+				"Recent Remasters",
+				"id=\"recent-remasters\"",
 				"headless/cli",
 				"bare-metal",
 			} {

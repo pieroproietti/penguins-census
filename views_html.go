@@ -419,6 +419,7 @@ type HTMLRecentEventItem struct {
 	Desktop         string
 	DisplayServer   string
 	EggsVersion     string
+	Clone           bool
 	Remaster        bool
 	Sysinstall      bool
 }
@@ -444,18 +445,20 @@ type HTMLRepoClientsView struct {
 }
 
 type HTMLSummaryView struct {
-	CSS              template.CSS
-	TotalEvents      int
-	UniqueMachines   int
-	RemasterCount    int
-	RemasterClones   int
-	SysinstallCount  int
-	SysinstallClones int
-	Tables           []HTMLTableCard
-	Artisans         []HTMLArtisanSummaryItem
-	TopInstallations []HTMLTopInstallationItem
-	RecentEvents     []HTMLRecentEventItem
-	RepoClients      *HTMLRepoClientsView
+	CSS               template.CSS
+	TotalEvents       int
+	UniqueMachines    int
+	RemasterCount     int
+	RemasterClones    int
+	SysinstallCount   int
+	SysinstallClones  int
+	Tables            []HTMLTableCard
+	Artisans          []HTMLArtisanSummaryItem
+	TopInstallations  []HTMLTopInstallationItem
+	RecentEvents      []HTMLRecentEventItem
+	RecentSysinstalls []HTMLRecentEventItem
+	RecentRemasters   []HTMLRecentEventItem
+	RepoClients       *HTMLRepoClientsView
 }
 
 type HTMLLiveDistroItem struct {
@@ -568,33 +571,50 @@ func renderHTMLSummary(s CensusSummary) string {
 		})
 	}
 
-	recentItems := make([]HTMLRecentEventItem, 0, len(s.RecentEvents))
-	for _, e := range s.RecentEvents {
-		artisanNick := ""
-		artisanURL := ""
-		if e.ArtisanNickname != "" {
-			artisanNick = e.ArtisanNickname
-			if !strings.HasPrefix(artisanNick, "@") {
-				artisanNick = "@" + artisanNick
+	toHTMLRecent := func(events []RecentEvent) []HTMLRecentEventItem {
+		items := make([]HTMLRecentEventItem, 0, len(events))
+		for _, e := range events {
+			artisanNick := ""
+			artisanURL := ""
+			if e.ArtisanNickname != "" {
+				artisanNick = e.ArtisanNickname
+				if !strings.HasPrefix(artisanNick, "@") {
+					artisanNick = "@" + artisanNick
+				}
+				artisanURL = e.ArtisanURL
+				if !isSafeURL(artisanURL) {
+					artisanURL = "/api/community"
+				}
 			}
-			artisanURL = e.ArtisanURL
-			if !isSafeURL(artisanURL) {
-				artisanURL = "/api/community"
+			date := formatTimeAgo(e.Date)
+			items = append(items, HTMLRecentEventItem{
+				Date:            date,
+				Country:         e.Country,
+				Distro:          e.Distro,
+				ArtisanNickname: artisanNick,
+				ArtisanURL:      template.URL(artisanURL),
+				Desktop:         e.Desktop,
+				DisplayServer:   e.DisplayServer,
+				EggsVersion:     e.EggsVersion,
+				Clone:           e.Clone,
+				Remaster:        e.Remaster,
+				Sysinstall:      e.Sysinstall,
+			})
+		}
+		return items
+	}
+
+	recentItems := toHTMLRecent(s.RecentEvents)
+	recentSysinstalls := toHTMLRecent(s.RecentSysinstalls)
+	recentRemasters := toHTMLRecent(s.RecentRemasters)
+	if len(recentSysinstalls) == 0 && len(recentRemasters) == 0 && len(recentItems) > 0 {
+		for _, it := range recentItems {
+			if it.Sysinstall {
+				recentSysinstalls = append(recentSysinstalls, it)
+			} else if it.Remaster {
+				recentRemasters = append(recentRemasters, it)
 			}
 		}
-		date := formatTimeAgo(e.Date)
-		recentItems = append(recentItems, HTMLRecentEventItem{
-			Date:            date,
-			Country:         e.Country,
-			Distro:          e.Distro,
-			ArtisanNickname: artisanNick,
-			ArtisanURL:      template.URL(artisanURL),
-			Desktop:         e.Desktop,
-			DisplayServer:   e.DisplayServer,
-			EggsVersion:     e.EggsVersion,
-			Remaster:        e.Remaster,
-			Sysinstall:      e.Sysinstall,
-		})
 	}
 
 	topItems := make([]HTMLTopInstallationItem, 0, len(s.TopInstallations))
@@ -640,18 +660,20 @@ func renderHTMLSummary(s CensusSummary) string {
 	}
 
 	data := HTMLSummaryView{
-		CSS:              template.CSS(embeddedCSS),
-		TotalEvents:      s.TotalEvents,
-		UniqueMachines:   s.UniqueMachines,
-		RemasterCount:    s.ByAction["remaster"],
-		RemasterClones:   s.RemasterClones,
-		SysinstallCount:  s.ByAction["sysinstall"],
-		SysinstallClones: s.SysinstallClones,
-		Tables:           tables,
-		Artisans:         artisanItems,
-		TopInstallations: topItems,
-		RecentEvents:     recentItems,
-		RepoClients:      repoView,
+		CSS:               template.CSS(embeddedCSS),
+		TotalEvents:       s.TotalEvents,
+		UniqueMachines:    s.UniqueMachines,
+		RemasterCount:     s.ByAction["remaster"],
+		RemasterClones:    s.RemasterClones,
+		SysinstallCount:   s.ByAction["sysinstall"],
+		SysinstallClones:  s.SysinstallClones,
+		Tables:            tables,
+		Artisans:          artisanItems,
+		TopInstallations:  topItems,
+		RecentEvents:      recentItems,
+		RecentSysinstalls: recentSysinstalls,
+		RecentRemasters:   recentRemasters,
+		RepoClients:       repoView,
 	}
 
 	var buf bytes.Buffer

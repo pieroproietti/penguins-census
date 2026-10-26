@@ -709,21 +709,25 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 	parentMap := make(map[string]string)
 
 	summary := CensusSummary{
-		RecentEvents:     make([]RecentEvent, 0),
-		TopInstallations: make([]TopInstallation, 0),
-		ByAction:         make(map[string]int),
-		ByDistro:         make(map[string]int),
-		ByArch:           make(map[string]int),
-		ByDesktop:        make(map[string]int),
-		ByDisplayServer:  make(map[string]int),
-		ByVirt:           make(map[string]int),
-		ByInit:           make(map[string]int),
-		ByCountry:        make(map[string]int),
-		ByVersion:        make(map[string]int),
+		RecentEvents:      make([]RecentEvent, 0),
+		RecentSysinstalls: make([]RecentEvent, 0),
+		RecentRemasters:   make([]RecentEvent, 0),
+		TopInstallations:  make([]TopInstallation, 0),
+		ByAction:          make(map[string]int),
+		ByDistro:          make(map[string]int),
+		ByArch:            make(map[string]int),
+		ByDesktop:         make(map[string]int),
+		ByDisplayServer:   make(map[string]int),
+		ByVirt:            make(map[string]int),
+		ByInit:            make(map[string]int),
+		ByCountry:         make(map[string]int),
+		ByVersion:         make(map[string]int),
 	}
 	uniqueUUIDs := make(map[string]struct{})
 	uniqueSysinstalls := make(map[string]CensusRecord)
 	var lastRecords []CensusRecord
+	var lastSysinstalls []CensusRecord
+	var lastRemasters []CensusRecord
 
 	// Pass 1: Build direct machines & parent lineage
 	_ = forEachLogLine(dataPath, func(line []byte) {
@@ -761,6 +765,17 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 		lastRecords = append(lastRecords, rec)
 		if len(lastRecords) > 10 {
 			lastRecords = lastRecords[1:]
+		}
+		if rec.Action == "sysinstall" {
+			lastSysinstalls = append(lastSysinstalls, rec)
+			if len(lastSysinstalls) > 10 {
+				lastSysinstalls = lastSysinstalls[1:]
+			}
+		} else if rec.Action == "remaster" {
+			lastRemasters = append(lastRemasters, rec)
+			if len(lastRemasters) > 10 {
+				lastRemasters = lastRemasters[1:]
+			}
 		}
 		summary.TotalEvents++
 		uuid := strings.TrimSpace(rec.UUID)
@@ -822,8 +837,7 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 		return summary, err
 	}
 
-	for i := len(lastRecords) - 1; i >= 0; i-- {
-		r := lastRecords[i]
+	toRecentEvent := func(r CensusRecord) RecentEvent {
 		country := strings.TrimSpace(r.Country)
 		if country == "" {
 			country = "XX"
@@ -847,6 +861,7 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 			Desktop:       desktop,
 			DisplayServer: displayServer,
 			EggsVersion:   strings.TrimSpace(r.EggsVersion),
+			Clone:         r.Options.Clone,
 			Remaster:      r.Action == "remaster",
 			Sysinstall:    r.Action == "sysinstall",
 		}
@@ -866,7 +881,17 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 				}
 			}
 		}
-		summary.RecentEvents = append(summary.RecentEvents, ev)
+		return ev
+	}
+
+	for i := len(lastRecords) - 1; i >= 0; i-- {
+		summary.RecentEvents = append(summary.RecentEvents, toRecentEvent(lastRecords[i]))
+	}
+	for i := len(lastSysinstalls) - 1; i >= 0; i-- {
+		summary.RecentSysinstalls = append(summary.RecentSysinstalls, toRecentEvent(lastSysinstalls[i]))
+	}
+	for i := len(lastRemasters) - 1; i >= 0; i-- {
+		summary.RecentRemasters = append(summary.RecentRemasters, toRecentEvent(lastRemasters[i]))
 	}
 
 	summary.UniqueMachines = len(uniqueUUIDs)
