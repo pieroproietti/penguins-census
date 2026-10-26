@@ -47,6 +47,8 @@ func renderTextSummary(s CensusSummary) string {
 	fmt.Fprintf(&buf, "- Remasters/Clones:    %d/%d\n", s.ByAction["remaster"], s.RemasterClones)
 	fmt.Fprintf(&buf, "- Sysinstalls/Clones:  %d/%d\n\n", s.ByAction["sysinstall"], s.SysinstallClones)
 
+	writeMarkdownRecentEvents(&buf, s.RecentEvents)
+
 	writeMarkdownTable(&buf, "Country", "Country", s.ByCountry, s.TotalEvents)
 	writeMarkdownTable(&buf, "Distro", "Distro", s.ByDistro, s.TotalEvents)
 	writeMarkdownTable(&buf, "Desktop", "Desktop", s.ByDesktop, s.TotalEvents)
@@ -57,7 +59,6 @@ func renderTextSummary(s CensusSummary) string {
 	writeMarkdownTable(&buf, "Version", "Version", s.ByVersion, s.TotalEvents)
 
 	writeMarkdownTopInstallations(&buf, s.TopInstallations)
-	writeMarkdownRecentEvents(&buf, s.RecentEvents)
 
 	if s.RepoClients != nil && s.RepoClients.UniqueIPs > 0 {
 		totalOps := s.ByAction["remaster"] + s.ByAction["sysinstall"]
@@ -218,7 +219,7 @@ func writeMarkdownRecentEvents(buf *bytes.Buffer, events []RecentEvent) {
 		if ev.Sysinstall {
 			sys = "✓"
 		}
-		date := ev.Date
+		date := formatTimeAgo(ev.Date)
 		if date == "" {
 			date = "-"
 		}

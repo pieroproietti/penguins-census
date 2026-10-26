@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCensusFormatsAndFallbacks(t *testing.T) {
@@ -100,11 +101,16 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 			if strings.Contains(body, "Compression") {
 				t.Errorf("expected text report to not contain Compression table, got:\n%s", body)
 			}
-			// Verify ranking: debian (2) appears before ubuntu (1)
-			idxDebian := strings.Index(body, "debian")
-			idxUbuntu := strings.Index(body, "ubuntu")
+			// Verify ranking in Distro table: debian (2) appears before ubuntu (1)
+			idxDistroSection := strings.Index(body, "### Distro")
+			if idxDistroSection == -1 {
+				t.Fatalf("expected ### Distro section in text report")
+			}
+			distroSection := body[idxDistroSection:]
+			idxDebian := strings.Index(distroSection, "debian")
+			idxUbuntu := strings.Index(distroSection, "ubuntu")
 			if idxDebian == -1 || idxUbuntu == -1 || idxDebian > idxUbuntu {
-				t.Errorf("expected debian (count 2) to be ranked before ubuntu (count 1)")
+				t.Errorf("expected debian (count 2) to be ranked before ubuntu (count 1) in Distro table")
 			}
 		})
 	}
@@ -532,5 +538,27 @@ func TestRenderArtisanStatsAndCatalog(t *testing.T) {
 	}
 	if strings.Contains(sumHTML, `id="community-artisans"`) {
 		t.Errorf("expected HTML summary to not contain community-artisans table")
+	}
+}
+
+func TestFormatTimeAgo(t *testing.T) {
+	now := time.Now().UTC()
+	if got := formatTimeAgo(""); got != "-" {
+		t.Errorf("expected '-' for empty string, got %q", got)
+	}
+	if got := formatTimeAgo(now.Format(time.RFC3339)); got != "just now" {
+		t.Errorf("expected 'just now', got %q", got)
+	}
+	if got := formatTimeAgo(now.Add(-30 * time.Second).Format("2006-01-02 15:04:05")); !strings.HasSuffix(got, "s ago") {
+		t.Errorf("expected seconds ago, got %q", got)
+	}
+	if got := formatTimeAgo(now.Add(-5 * time.Minute).Format("2006-01-02 15:04:05")); got != "5m ago" {
+		t.Errorf("expected '5m ago', got %q", got)
+	}
+	if got := formatTimeAgo(now.Add(-3 * time.Hour).Format("2006-01-02 15:04:05")); got != "3h ago" {
+		t.Errorf("expected '3h ago', got %q", got)
+	}
+	if got := formatTimeAgo(now.Add(-48 * time.Hour).Format("2006-01-02 15:04:05")); got != "2d ago" {
+		t.Errorf("expected '2d ago', got %q", got)
 	}
 }

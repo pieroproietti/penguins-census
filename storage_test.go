@@ -348,11 +348,12 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 		}
 	}
 
-	// Verify Top 10 Sysinstalls appears before Recent Events, with Recent Events at the very end
+	// Verify Recent Events appears right after Sysinstalls/Clones and before Top 10 Sysinstalls
+	idxSysClones := strings.Index(txtBody, "- Sysinstalls/Clones:")
 	idxTop := strings.Index(txtBody, "### Top 10 Sysinstalls")
 	idxRecent := strings.Index(txtBody, "### Recent Events")
-	if idxRecent == -1 || idxTop == -1 || idxRecent <= idxTop {
-		t.Errorf("expected Top 10 Sysinstalls to appear before Recent Events (Recent Events in finale) in text summary")
+	if idxRecent == -1 || idxTop == -1 || idxSysClones == -1 || idxRecent <= idxSysClones || idxRecent >= idxTop {
+		t.Errorf("expected Recent Events to appear right after Sysinstalls/Clones and before Top 10 Sysinstalls in text summary")
 	}
 
 	// 3. Verify HTML output
@@ -361,10 +362,11 @@ func TestTopInstallationsRankingAndDeduplication(t *testing.T) {
 	srv.ServeHTTP(wHTML, reqHTML)
 	htmlBody := wHTML.Body.String()
 
+	idxHTMLSysClones := strings.Index(htmlBody, `id="sysinstalls-clones"`)
 	idxHTMLTop := strings.Index(htmlBody, `id="top-sysinstalls"`)
 	idxHTMLRecent := strings.Index(htmlBody, `id="recent-events"`)
-	if idxHTMLTop == -1 || idxHTMLRecent == -1 || idxHTMLRecent <= idxHTMLTop {
-		t.Errorf("expected top-sysinstalls panel to appear before recent-events panel in HTML")
+	if idxHTMLSysClones == -1 || idxHTMLTop == -1 || idxHTMLRecent == -1 || idxHTMLRecent <= idxHTMLSysClones || idxHTMLRecent >= idxHTMLTop {
+		t.Errorf("expected recent-events panel to appear right after sysinstalls-clones card and before top-sysinstalls panel in HTML")
 	}
 
 	if !strings.Contains(htmlBody, `id="top-sysinstalls"`) {

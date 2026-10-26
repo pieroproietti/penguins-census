@@ -134,15 +134,15 @@ func TestAnalyzeAccessLogs(t *testing.T) {
 		}
 	}
 
-	// Verify order: Unique IP last 15 days is placed after Recent Events and Top Sysinstalls
+	// Verify order: Recent Events is at the top, followed by Top Sysinstalls and Unique IP last 15 days
 	topIdx := strings.Index(htmlRep, `id="top-sysinstalls"`)
 	recentIdx := strings.Index(htmlRep, `id="recent-events"`)
 	uniqueIPIdx := strings.Index(htmlRep, `id="unique-ips"`)
 	if topIdx == -1 || recentIdx == -1 || uniqueIPIdx == -1 {
 		t.Fatalf("expected top-sysinstalls, recent-events, and unique-ips panels in HTML")
 	}
-	if !(recentIdx > topIdx && uniqueIPIdx > recentIdx) {
-		t.Errorf("expected order: top-sysinstalls < recent-events < unique-ips, got %d, %d, %d", topIdx, recentIdx, uniqueIPIdx)
+	if !(recentIdx < topIdx && uniqueIPIdx > topIdx) {
+		t.Errorf("expected order: recent-events < top-sysinstalls < unique-ips, got %d, %d, %d", recentIdx, topIdx, uniqueIPIdx)
 	}
 
 	// Verify Text summary includes the appended repo-clients section at the end
@@ -161,7 +161,7 @@ func TestAnalyzeAccessLogs(t *testing.T) {
 	txtTopIdx := strings.Index(txtRep, "### Top 10 Sysinstalls")
 	txtRecentIdx := strings.Index(txtRep, "### Recent Events")
 	txtUniqueIPIdx := strings.Index(txtRep, "### Unique IP last 15 days")
-	if !(txtRecentIdx > txtTopIdx && txtUniqueIPIdx > txtRecentIdx) {
-		t.Errorf("expected text order: Top Sysinstalls < Recent Events < Unique IP last 15 days, got %d, %d, %d", txtTopIdx, txtRecentIdx, txtUniqueIPIdx)
+	if !(txtRecentIdx < txtTopIdx && txtUniqueIPIdx > txtTopIdx) {
+		t.Errorf("expected text order: Recent Events < Top Sysinstalls < Unique IP last 15 days, got %d, %d, %d", txtRecentIdx, txtTopIdx, txtUniqueIPIdx)
 	}
 }

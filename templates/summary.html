@@ -31,6 +31,47 @@
     <div class="card" id="sysinstalls-clones"><span id="sysinstalls" class="anchor-alias"></span><span id="installations" class="anchor-alias"></span><span id="sysinstall" class="anchor-alias"></span><span id="installation" class="anchor-alias"></span><span id="sysinstall-clone" class="anchor-alias"></span><span id="clones" class="anchor-alias"></span><span id="clone" class="anchor-alias"></span><div class="card-label">Sysinstalls/Clones</div><div class="card-value">{{.SysinstallCount}}/{{.SysinstallClones}}</div></div>
   </div>
 
+  <section class="panel" id="recent-events">
+    <h2><a href="#recent-events" class="anchor-link">Recent Events</a></h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Country</th>
+          <th>Distro</th>
+          <th>Desktop</th>
+          <th>Display Server</th>
+          <th>Version</th>
+          <th class="center">Remaster</th>
+          <th class="center">Sysinstall</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{if not .RecentEvents}}
+        <tr><td colspan="8" class="empty">No events recorded yet</td></tr>
+        {{else}}
+        {{range .RecentEvents}}
+        <tr>
+          <td>{{if .Date}}{{.Date}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td>{{.Country}}</td>
+          <td>
+            {{.Distro}}
+            {{if .ArtisanNickname}}
+            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{end}}
+          </td>
+          <td>{{.Desktop}}</td>
+          <td>{{.DisplayServer}}</td>
+          <td>{{if .EggsVersion}}{{.EggsVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="center">{{if .Remaster}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+          <td class="center">{{if .Sysinstall}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+        </tr>
+        {{end}}
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+
   <div class="grid">
     {{range .Tables}}
     <section class="panel" id="{{.ID}}">
@@ -98,47 +139,6 @@
           <td>{{.Arch}}</td>
           <td>{{.EggsVersion}}</td>
           <td class="num">{{.SumSysinstall}}</td>
-        </tr>
-        {{end}}
-        {{end}}
-      </tbody>
-    </table>
-  </section>
-
-  <section class="panel" id="recent-events">
-    <h2><a href="#recent-events" class="anchor-link">Recent Events</a></h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Country</th>
-          <th>Distro</th>
-          <th>Desktop</th>
-          <th>Display Server</th>
-          <th>Version</th>
-          <th class="center">Remaster</th>
-          <th class="center">Sysinstall</th>
-        </tr>
-      </thead>
-      <tbody>
-        {{if not .RecentEvents}}
-        <tr><td colspan="8" class="empty">No events recorded yet</td></tr>
-        {{else}}
-        {{range .RecentEvents}}
-        <tr>
-          <td>{{if .Date}}{{.Date}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td>{{.Country}}</td>
-          <td>
-            {{.Distro}}
-            {{if .ArtisanNickname}}
-            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
-            {{end}}
-          </td>
-          <td>{{.Desktop}}</td>
-          <td>{{.DisplayServer}}</td>
-          <td>{{if .EggsVersion}}{{.EggsVersion}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td class="center">{{if .Remaster}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
-          <td class="center">{{if .Sysinstall}}<span class="check">&#10003;</span>{{else}}<span class="muted">&mdash;</span>{{end}}</td>
         </tr>
         {{end}}
         {{end}}

@@ -330,15 +330,50 @@ func formatEventDate(ts string) string {
 		return "-"
 	}
 	if t, err := time.Parse(time.RFC3339, ts); err == nil {
-		return t.Format("2006-01-02 15:04:05")
+		return t.UTC().Format("2006-01-02 15:04:05")
 	}
 	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
-		return t.Format("2006-01-02 15:04:05")
+		return t.UTC().Format("2006-01-02 15:04:05")
 	}
 	if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
 		return t.Format("2006-01-02 15:04:05")
 	}
 	return ts
+}
+
+func formatTimeAgo(ts string) string {
+	ts = strings.TrimSpace(ts)
+	if ts == "" || ts == "-" {
+		return "-"
+	}
+	t := parseFlexibleTimestamp(ts)
+	if t.IsZero() {
+		return ts
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		secs := int(d.Seconds())
+		if secs <= 5 {
+			return "just now"
+		}
+		return fmt.Sprintf("%ds ago", secs)
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	if d < 30*24*time.Hour {
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+	if d < 365*24*time.Hour {
+		return fmt.Sprintf("%dmo ago", int(d.Hours()/(24*30)))
+	}
+	return fmt.Sprintf("%dy ago", int(d.Hours()/(24*365)))
 }
 
 func pluralRemasters(count int) string {
@@ -547,7 +582,7 @@ func renderHTMLSummary(s CensusSummary) string {
 				artisanURL = "/api/community"
 			}
 		}
-		date := formatEventDate(e.Date)
+		date := formatTimeAgo(e.Date)
 		recentItems = append(recentItems, HTMLRecentEventItem{
 			Date:            date,
 			Country:         e.Country,
