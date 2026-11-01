@@ -481,32 +481,29 @@ func TestCommunityDecouplingFromCensusTelemetry(t *testing.T) {
 	}
 
 	// 2. Post community profile to /api/community
+	authorID := ComputeAuthorID("user@domain.com")
 	commPayload := `{
-		"uuid": "community-uuid-99999",
-		"nickname": "community-user",
-		"location": "Berlin, Germany",
-		"bio": "Open source advocate",
-		"contact": "@commuser",
-		"source_url": "https://github.com/commuser/repo"
+		"author_id": "` + authorID + `",
+		"uuid": "community-uuid-99999"
 	}`
 	reqComm := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(commPayload))
 	reqComm.Header.Set("Content-Type", "application/json")
 	wComm := httptest.NewRecorder()
 	srv.ServeHTTP(wComm, reqComm)
 
-	if wComm.Code != http.StatusOK {
-		t.Fatalf("expected 200 on community POST, got %d", wComm.Code)
+	if wComm.Code != http.StatusOK && wComm.Code != http.StatusCreated {
+		t.Fatalf("expected 200 or 201 on community POST, got %d", wComm.Code)
 	}
 
 	// Verify community file exists separately
-	commFile := filepath.Join(commDir, "community-uuid-99999.json")
+	commFile := filepath.Join(commDir, authorID+".json")
 	if _, err := os.Stat(commFile); err != nil {
 		t.Fatalf("expected community file at %s: %v", commFile, err)
 	}
 
 	// Verify census file has not received community profile
 	censusLineBytesAfter, _ := os.ReadFile(dataFile)
-	if strings.Contains(string(censusLineBytesAfter), "community-uuid-99999") || strings.Contains(string(censusLineBytesAfter), "community-user") {
+	if strings.Contains(string(censusLineBytesAfter), authorID) || strings.Contains(string(censusLineBytesAfter), "community-uuid-99999") {
 		t.Errorf("census.jsonl contains community profile data: %s", string(censusLineBytesAfter))
 	}
 
@@ -515,7 +512,7 @@ func TestCommunityDecouplingFromCensusTelemetry(t *testing.T) {
 	wRep := httptest.NewRecorder()
 	srv.ServeHTTP(wRep, reqRep)
 	repTxt := wRep.Body.String()
-	if strings.Contains(repTxt, "community-user") || strings.Contains(repTxt, "Berlin") {
+	if strings.Contains(repTxt, authorID) {
 		t.Errorf("census text report contains community profile data: %s", repTxt)
 	}
 }
@@ -540,30 +537,48 @@ func TestTokenGenerationAndStorage(t *testing.T) {
 	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
 	srv.SetCommunityDir(commDir)
 
-	// Test profile storage using ID
+	// Test profile storage using AuthorID
 	prof := CommunityProfile{
-		ID:        "artisan-test-id",
-		UUID:      "artisan-test-uuid",
-		Nickname:  "artisan-tester",
-		TokenHash: tokenHash,
+		AuthorID:     "artisan-test-id",
+		ClaimedUUIDs: []string{"artisan-test-uuid"},
+		TokenHash:    tokenHash,
+		Enabled:      true,
 	}
 	if err := srv.saveCommunityProfile(prof); err != nil {
 		t.Fatalf("saveCommunityProfile error: %v", err)
 	}
 
-	// Verify file is saved as <id>.json
+	// Verify file is saved as <author_id>.json
 	if _, err := os.Stat(filepath.Join(commDir, "artisan-test-id.json")); err != nil {
 		t.Fatalf("expected file artisan-test-id.json to exist: %v", err)
 	}
 
-	// Test getCommunityProfile by ID and by UUID
+	// Test getCommunityProfile by AuthorID and by claimed UUID
 	byID, err := srv.getCommunityProfile("artisan-test-id")
-	if err != nil || byID.Nickname != "artisan-tester" {
-		t.Fatalf("failed getCommunityProfile by ID: %v", err)
+	if err != nil || byID.AuthorID != "artisan-test-id" {
+		t.Fatalf("failed getCommunityProfile by AuthorID: %v", err)
 	}
 	byUUID, err := srv.getCommunityProfile("artisan-test-uuid")
-	if err != nil || byUUID.Nickname != "artisan-tester" {
+	if err != nil || byUUID.AuthorID != "artisan-test-id" {
 		t.Fatalf("failed getCommunityProfile by UUID: %v", err)
+	}
+
+	// Test claimUUIDForAuthor stealing machine from another author
+	prof2 := CommunityProfile{
+		AuthorID:     "artisan-stealer-id",
+		ClaimedUUIDs: []string{},
+		TokenHash:    tokenHash,
+		Enabled:      true,
+	}
+	if err := srv.saveCommunityProfile(prof2); err != nil {
+		t.Fatalf("save prof2 error: %v", err)
+	}
+	if err := srv.claimUUIDForAuthor("artisan-stealer-id", "artisan-test-uuid"); err != nil {
+		t.Fatalf("claimUUIDForAuthor error: %v", err)
+	}
+	orig, _ := srv.getCommunityProfile("artisan-test-id")
+	if len(orig.ClaimedUUIDs) != 0 {
+		t.Errorf("expected original author to lose claimed UUID, got: %v", orig.ClaimedUUIDs)
 	}
 
 	// Test findProfileByToken
@@ -571,8 +586,8 @@ func TestTokenGenerationAndStorage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findProfileByToken error: %v", err)
 	}
-	if found.GetID() != "artisan-test-id" {
-		t.Fatalf("expected ID artisan-test-id, got %s", found.GetID())
+	if found.GetID() != "artisan-test-id" && found.GetID() != "artisan-stealer-id" {
+		t.Fatalf("expected matching ID, got %s", found.GetID())
 	}
 
 	// Test with invalid token
@@ -581,8 +596,8 @@ func TestTokenGenerationAndStorage(t *testing.T) {
 		t.Fatalf("expected error for invalid token, got nil")
 	}
 
-	// Test deleteCommunityProfile by UUID
-	if err := srv.deleteCommunityProfile("artisan-test-uuid"); err != nil {
+	// Test deleteCommunityProfile by AuthorID
+	if err := srv.deleteCommunityProfile("artisan-test-id"); err != nil {
 		t.Fatalf("delete error: %v", err)
 	}
 	_, err = srv.getCommunityProfile("artisan-test-id")

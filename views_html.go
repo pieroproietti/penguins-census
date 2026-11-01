@@ -94,6 +94,12 @@ func formatDistroBadge(distro DistroInfo, sys SystemInfo) string {
 	return strings.Join(parts, " • ")
 }
 
+type SocialLink struct {
+	Platform string
+	Label    string
+	URL      string
+}
+
 func buildSocialLinks(socials map[string]string, contact string) []SocialLink {
 	var links []SocialLink
 	seenURLs := make(map[string]bool)
@@ -396,7 +402,7 @@ func locDisplayHTML(locDisplay string) string {
 	if locDisplay == "" {
 		return ""
 	}
-	return fmt.Sprintf(`<div class="artisan-loc">%s</div>`, locDisplay)
+	return fmt.Sprintf(`<div class="author-loc">%s</div>`, locDisplay)
 }
 
 type HTMLTableCard struct {
@@ -407,7 +413,7 @@ type HTMLTableCard struct {
 	Rows    []TableRow
 }
 
-type HTMLArtisanSummaryItem struct {
+type HTMLAuthorSummaryItem struct {
 	Nickname           string
 	Link               template.URL
 	LocationDisplay    string
@@ -419,30 +425,33 @@ type HTMLArtisanSummaryItem struct {
 	SourceURL          string
 }
 
+// Deprecated alias
+type HTMLArtisanSummaryItem = HTMLAuthorSummaryItem
+
 type HTMLRecentEventItem struct {
-	Date            string
-	Country         string
-	Distro          string
-	ArtisanNickname string
-	ArtisanURL      template.URL
-	Desktop         string
-	DisplayServer   string
-	EggsVersion     string
-	Clone           bool
-	Remaster        bool
-	Sysinstall      bool
+	Date           string
+	Country        string
+	Distro         string
+	AuthorNickname string
+	AuthorURL      template.URL
+	Desktop        string
+	DisplayServer  string
+	EggsVersion    string
+	Clone          bool
+	Remaster       bool
+	Sysinstall     bool
 }
 
 type HTMLTopInstallationItem struct {
-	Country         string
-	Distro          string
-	ArtisanNickname string
-	ArtisanURL      template.URL
-	Desktop         string
-	DisplayServer   string
-	Arch            string
-	EggsVersion     string
-	SumSysinstall   int
+	Country        string
+	Distro         string
+	AuthorNickname string
+	AuthorURL      template.URL
+	Desktop        string
+	DisplayServer  string
+	Arch           string
+	EggsVersion    string
+	SumSysinstall  int
 }
 
 type HTMLRepoClientsView struct {
@@ -462,7 +471,8 @@ type HTMLSummaryView struct {
 	SysinstallCount   int
 	SysinstallClones  int
 	Tables            []HTMLTableCard
-	Artisans          []HTMLArtisanSummaryItem
+	Authors           []HTMLAuthorSummaryItem
+	Artisans          []HTMLAuthorSummaryItem // Compatibility
 	TopInstallations  []HTMLTopInstallationItem
 	RecentEvents      []HTMLRecentEventItem
 	RecentSysinstalls []HTMLRecentEventItem
@@ -476,15 +486,11 @@ type HTMLLiveDistroItem struct {
 	LastSeen string
 }
 
-type HTMLArtisanCard struct {
-	ID                string
-	UUID              string
-	AuthType          string
-	IsGitHub          bool
-	Nickname          string
-	CountryBadge      string
-	LocationDisplay   string
-	Bio               string
+type HTMLAuthorCard struct {
+	AuthorID          string
+	DisplayName       string
+	AvatarURL         template.URL
+	ProfileURL        template.URL
 	HasLatestRemaster bool
 	MachinesCount     int
 	RemasterCount     int
@@ -493,18 +499,21 @@ type HTMLArtisanCard struct {
 	ISOBadge          string
 	LastBuildDate     string
 	LiveDistros       []HTMLLiveDistroItem
-	SourceURL         template.URL
-	Socials           []SocialLink
 }
+
+// Deprecated alias
+type HTMLArtisanCard = HTMLAuthorCard
 
 type HTMLCommunityView struct {
 	CSS               template.CSS
 	GitHubAuthEnabled bool
-	TotalArtisans     int
+	TotalAuthors      int
+	TotalArtisans     int // Compatibility
 	TotalRemasters    int
 	TotalInstalls     int
 	TotalCountries    int
-	Artisans          []HTMLArtisanCard
+	Authors           []HTMLAuthorCard
+	Artisans          []HTMLAuthorCard // Compatibility
 }
 
 func renderHTMLSummary(s CensusSummary) string {
@@ -519,11 +528,19 @@ func renderHTMLSummary(s CensusSummary) string {
 		{ID: "version", Title: "Version", ColName: "Version", Aliases: []string{"eggs-version"}, Rows: sortedVersionRows(s.ByVersion, s.TotalEvents)},
 	}
 
-	artisanItems := make([]HTMLArtisanSummaryItem, 0, len(s.Artisans))
-	for _, a := range s.Artisans {
-		nick := strings.TrimSpace(a.Nickname)
+	rawAuthors := s.Authors
+	if len(rawAuthors) == 0 && len(s.Artisans) > 0 {
+		rawAuthors = s.Artisans
+	}
+
+	authorItems := make([]HTMLAuthorSummaryItem, 0, len(rawAuthors))
+	for _, a := range rawAuthors {
+		nick := strings.TrimSpace(a.DisplayName)
 		if nick == "" {
-			nick = "artisan"
+			nick = a.AuthorID
+			if len(nick) > 8 {
+				nick = nick[:8]
+			}
 		}
 		if !strings.HasPrefix(nick, "@") {
 			nick = "@" + nick
@@ -531,13 +548,8 @@ func renderHTMLSummary(s CensusSummary) string {
 
 		country := strings.ToUpper(strings.TrimSpace(a.Country))
 		flag := countryToFlag(country)
-		loc := strings.TrimSpace(a.Location)
 		locDisplay := ""
-		if loc != "" && flag != "" {
-			locDisplay = fmt.Sprintf("%s %s", loc, flag)
-		} else if loc != "" {
-			locDisplay = loc
-		} else if flag != "" {
+		if flag != "" {
 			locDisplay = fmt.Sprintf("%s %s", flag, country)
 		} else if country != "" {
 			locDisplay = country
@@ -548,14 +560,9 @@ func renderHTMLSummary(s CensusSummary) string {
 			isoBadge = formatDistroBadge(a.LatestRemaster.Distro, a.LatestRemaster.System)
 		}
 
-		sourceLink := ""
-		if isSafeURL(a.SourceURL) {
-			sourceLink = a.SourceURL
-		}
-
-		artisanLink := "/api/community"
-		if isSafeURL(a.SourceURL) {
-			artisanLink = a.SourceURL
+		authorLink := a.ProfileURL
+		if authorLink == "" {
+			authorLink = "/api/community"
 		}
 
 		liveDistrosSummary := ""
@@ -567,47 +574,51 @@ func renderHTMLSummary(s CensusSummary) string {
 			liveDistrosSummary = strings.Join(distros, ", ")
 		}
 
-		artisanItems = append(artisanItems, HTMLArtisanSummaryItem{
+		authorItems = append(authorItems, HTMLAuthorSummaryItem{
 			Nickname:           nick,
-			Link:               template.URL(artisanLink),
+			Link:               template.URL(authorLink),
 			LocationDisplay:    locDisplay,
 			ISOBadge:           isoBadge,
 			MachinesCount:      a.MachinesCount,
 			RemasterCount:      a.RemasterCount,
 			InstallsCount:      a.InstallsCount,
 			LiveDistrosSummary: liveDistrosSummary,
-			SourceURL:          sourceLink,
+			SourceURL:          authorLink,
 		})
 	}
 
 	toHTMLRecent := func(events []RecentEvent) []HTMLRecentEventItem {
 		items := make([]HTMLRecentEventItem, 0, len(events))
 		for _, e := range events {
-			artisanNick := ""
-			artisanURL := ""
-			if e.ArtisanNickname != "" {
-				artisanNick = e.ArtisanNickname
-				if !strings.HasPrefix(artisanNick, "@") {
-					artisanNick = "@" + artisanNick
+			authorNick := e.AuthorNickname
+			if authorNick == "" {
+				authorNick = e.ArtisanNickname
+			}
+			authorURL := e.AuthorURL
+			if authorURL == "" {
+				authorURL = e.ArtisanURL
+			}
+			if authorNick != "" {
+				if !strings.HasPrefix(authorNick, "@") {
+					authorNick = "@" + authorNick
 				}
-				artisanURL = e.ArtisanURL
-				if !isSafeURL(artisanURL) {
-					artisanURL = "/api/community"
+				if !isSafeURL(authorURL) {
+					authorURL = "/api/community"
 				}
 			}
 			date := formatTimeAgo(e.Date)
 			items = append(items, HTMLRecentEventItem{
-				Date:            date,
-				Country:         e.Country,
-				Distro:          e.Distro,
-				ArtisanNickname: artisanNick,
-				ArtisanURL:      template.URL(artisanURL),
-				Desktop:         e.Desktop,
-				DisplayServer:   e.DisplayServer,
-				EggsVersion:     e.EggsVersion,
-				Clone:           e.Clone,
-				Remaster:        e.Remaster,
-				Sysinstall:      e.Sysinstall,
+				Date:           date,
+				Country:        e.Country,
+				Distro:         e.Distro,
+				AuthorNickname: authorNick,
+				AuthorURL:      template.URL(authorURL),
+				Desktop:        e.Desktop,
+				DisplayServer:  e.DisplayServer,
+				EggsVersion:    e.EggsVersion,
+				Clone:          e.Clone,
+				Remaster:       e.Remaster,
+				Sysinstall:     e.Sysinstall,
 			})
 		}
 		return items
@@ -628,28 +639,32 @@ func renderHTMLSummary(s CensusSummary) string {
 
 	topItems := make([]HTMLTopInstallationItem, 0, len(s.TopInstallations))
 	for _, ti := range s.TopInstallations {
-		artisanNick := ""
-		artisanURL := ""
-		if ti.ArtisanNickname != "" {
-			artisanNick = ti.ArtisanNickname
-			if !strings.HasPrefix(artisanNick, "@") {
-				artisanNick = "@" + artisanNick
+		authorNick := ti.AuthorNickname
+		if authorNick == "" {
+			authorNick = ti.ArtisanNickname
+		}
+		authorURL := ti.AuthorURL
+		if authorURL == "" {
+			authorURL = ti.ArtisanURL
+		}
+		if authorNick != "" {
+			if !strings.HasPrefix(authorNick, "@") {
+				authorNick = "@" + authorNick
 			}
-			artisanURL = ti.ArtisanURL
-			if !isSafeURL(artisanURL) {
-				artisanURL = "/api/community"
+			if !isSafeURL(authorURL) {
+				authorURL = "/api/community"
 			}
 		}
 		topItems = append(topItems, HTMLTopInstallationItem{
-			Country:         ti.Country,
-			Distro:          ti.Distro,
-			ArtisanNickname: artisanNick,
-			ArtisanURL:      template.URL(artisanURL),
-			Desktop:         ti.Desktop,
-			DisplayServer:   ti.DisplayServer,
-			Arch:            ti.Arch,
-			EggsVersion:     ti.EggsVersion,
-			SumSysinstall:   ti.SumSysinstall,
+			Country:        ti.Country,
+			Distro:         ti.Distro,
+			AuthorNickname: authorNick,
+			AuthorURL:      template.URL(authorURL),
+			Desktop:        ti.Desktop,
+			DisplayServer:  ti.DisplayServer,
+			Arch:           ti.Arch,
+			EggsVersion:    ti.EggsVersion,
+			SumSysinstall:  ti.SumSysinstall,
 		})
 	}
 
@@ -677,7 +692,8 @@ func renderHTMLSummary(s CensusSummary) string {
 		SysinstallCount:   s.ByAction["sysinstall"],
 		SysinstallClones:  s.SysinstallClones,
 		Tables:            tables,
-		Artisans:          artisanItems,
+		Authors:           authorItems,
+		Artisans:          authorItems,
 		TopInstallations:  topItems,
 		RecentEvents:      recentItems,
 		RecentSysinstalls: recentSysinstalls,
@@ -692,7 +708,7 @@ func renderHTMLSummary(s CensusSummary) string {
 	return buf.String()
 }
 
-func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) string {
+func renderCommunityHTML(authors []AuthorProfile, ghAuthEnabled ...bool) string {
 	ghEnabled := false
 	if len(ghAuthEnabled) > 0 {
 		ghEnabled = ghAuthEnabled[0]
@@ -701,9 +717,9 @@ func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) strin
 	totalRemasters := 0
 	totalInstalls := 0
 	countriesMap := make(map[string]bool)
-	cardItems := make([]HTMLArtisanCard, 0, len(artisans))
+	cardItems := make([]HTMLAuthorCard, 0, len(authors))
 
-	for _, a := range artisans {
+	for _, a := range authors {
 		totalRemasters += a.RemasterCount
 		totalInstalls += a.InstallsCount
 		country := strings.ToUpper(strings.TrimSpace(a.Country))
@@ -711,35 +727,24 @@ func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) strin
 			countriesMap[country] = true
 		}
 
-		nick := strings.TrimSpace(a.Nickname)
+		nick := strings.TrimSpace(a.DisplayName)
 		if nick == "" {
-			nick = a.GetID()
-			if len(nick) > 8 {
-				nick = nick[:8]
-			}
-		}
-		if !strings.HasPrefix(nick, "@") {
-			nick = "@" + nick
-		}
-
-		flag := countryToFlag(country)
-		countryBadge := ""
-		if country != "" && country != "XX" {
-			if flag != "" {
-				countryBadge = fmt.Sprintf("%s %s", flag, country)
+			nick = "author-"
+			if len(a.AuthorID) >= 8 {
+				nick += a.AuthorID[:8]
 			} else {
-				countryBadge = country
+				nick += a.AuthorID
 			}
 		}
 
-		loc := strings.TrimSpace(a.Location)
-		locDisplay := ""
-		if loc != "" && flag != "" {
-			locDisplay = fmt.Sprintf("📍 %s %s", loc, flag)
-		} else if loc != "" {
-			locDisplay = fmt.Sprintf("📍 %s", loc)
-		} else if flag != "" {
-			locDisplay = fmt.Sprintf("📍 %s %s", flag, country)
+		avatarURL := a.AvatarURL
+		if avatarURL == "" {
+			avatarURL = fmt.Sprintf("https://www.gravatar.com/avatar/%s?s=96&d=identicon", a.AuthorID)
+		}
+
+		profileURL := a.ProfileURL
+		if profileURL == "" {
+			profileURL = fmt.Sprintf("https://gravatar.com/%s", a.AuthorID)
 		}
 
 		hasLatest := a.LatestRemaster != nil
@@ -748,18 +753,6 @@ func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) strin
 		if hasLatest {
 			isoBadge = formatDistroBadge(a.LatestRemaster.Distro, a.LatestRemaster.System)
 			lastBuildDate = formatEventDate(a.LastRemasterAt)
-		}
-
-		sourceURL := ""
-		if isSafeURL(a.SourceURL) {
-			sourceURL = a.SourceURL
-		}
-
-		var safeSocials []SocialLink
-		for _, sl := range buildSocialLinks(a.Socials, a.Contact) {
-			if isSafeURL(sl.URL) {
-				safeSocials = append(safeSocials, sl)
-			}
 		}
 
 		liveItems := make([]HTMLLiveDistroItem, 0, len(a.LiveDistros))
@@ -772,15 +765,11 @@ func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) strin
 			})
 		}
 
-		cardItems = append(cardItems, HTMLArtisanCard{
-			ID:                a.GetID(),
-			UUID:              a.UUID,
-			AuthType:          a.AuthType,
-			IsGitHub:          strings.EqualFold(a.AuthType, "github"),
-			Nickname:          nick,
-			CountryBadge:      countryBadge,
-			LocationDisplay:   locDisplay,
-			Bio:               strings.TrimSpace(a.Bio),
+		cardItems = append(cardItems, HTMLAuthorCard{
+			AuthorID:          a.AuthorID,
+			DisplayName:       nick,
+			AvatarURL:         template.URL(avatarURL),
+			ProfileURL:        template.URL(profileURL),
 			HasLatestRemaster: hasLatest,
 			MachinesCount:     a.MachinesCount,
 			RemasterCount:     a.RemasterCount,
@@ -789,18 +778,18 @@ func renderCommunityHTML(artisans []ArtisanProfile, ghAuthEnabled ...bool) strin
 			ISOBadge:          isoBadge,
 			LastBuildDate:     lastBuildDate,
 			LiveDistros:       liveItems,
-			SourceURL:         template.URL(sourceURL),
-			Socials:           safeSocials,
 		})
 	}
 
 	data := HTMLCommunityView{
 		CSS:               template.CSS(embeddedCSS),
 		GitHubAuthEnabled: ghEnabled,
-		TotalArtisans:     len(artisans),
+		TotalAuthors:      len(authors),
+		TotalArtisans:     len(authors),
 		TotalRemasters:    totalRemasters,
 		TotalInstalls:     totalInstalls,
 		TotalCountries:    len(countriesMap),
+		Authors:           cardItems,
 		Artisans:          cardItems,
 	}
 

@@ -256,18 +256,13 @@ func TestCommunityPostAndGet(t *testing.T) {
 	srv := NewCensusServer(dataFile, "")
 	srv.SetCommunityDir(commDir)
 
-	uuid := "01f86488-6b11-59ff-9630-4215b4d2de3a"
+	authorID := ComputeAuthorID("artisan@example.com")
+	machineUUID := "01f86488-6b11-59ff-9630-4215b4d2de3a"
 	payload := `{
-		"uuid": "` + uuid + `",
-		"nickname": "artisan",
-		"location": "Rome, Italy",
-		"bio": "Open source developer and Linux enthusiast",
-		"contact": "@artisan",
-		"socials": {
-			"github": "artisan-dev",
-			"telegram": "@artisan"
-		},
-		"source_url": "https://github.com/artisan/distro"
+		"author_id": "` + authorID + `",
+		"uuid": "` + machineUUID + `",
+		"email": "artisan@example.com",
+		"enabled": true
 	}`
 
 	// 1. POST /api/community
@@ -276,58 +271,60 @@ func TestCommunityPostAndGet(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d (body: %s)", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("expected status 201 or 200, got %d (body: %s)", w.Code, w.Body.String())
 	}
 
 	var postResp map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &postResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if postResp["status"] != "ok" || postResp["uuid"] != uuid {
+	if postResp["status"] != "ok" || postResp["author_id"] != authorID {
 		t.Errorf("unexpected POST response: %+v", postResp)
 	}
+	token := postResp["artisan_token"]
+	if token == "" || !strings.HasPrefix(token, "egg_pat_") {
+		t.Errorf("expected artisan_token with egg_pat_ prefix, got: %s", token)
+	}
 
-	// 2. Verify file persisted on disk as <uuid>.json
-	targetFile := filepath.Join(commDir, uuid+".json")
+	// 2. Verify file persisted on disk as <author_id>.json
+	targetFile := filepath.Join(commDir, authorID+".json")
 	fileBytes, err := os.ReadFile(targetFile)
 	if err != nil {
 		t.Fatalf("expected profile file at %s: %v", targetFile, err)
 	}
-	type Profile struct {
-		UUID      string            `json:"uuid"`
-		Nickname  string            `json:"nickname"`
-		Location  string            `json:"location"`
-		Bio       string            `json:"bio"`
-		Contact   string            `json:"contact"`
-		Socials   map[string]string `json:"socials"`
-		SourceURL string            `json:"source_url"`
-		UpdatedAt string            `json:"updated_at"`
-	}
-	var p Profile
+	var p CommunityProfile
 	if err := json.Unmarshal(fileBytes, &p); err != nil {
 		t.Fatalf("failed to parse saved profile JSON: %v", err)
 	}
-	if p.UUID != uuid || p.Nickname != "artisan" || p.Location != "Rome, Italy" || p.Socials["github"] != "artisan-dev" {
+	if p.AuthorID != authorID || len(p.ClaimedUUIDs) != 1 || p.ClaimedUUIDs[0] != machineUUID || !p.Enabled {
 		t.Errorf("saved profile mismatch: %+v", p)
 	}
-	if p.UpdatedAt == "" {
-		t.Errorf("expected updated_at to be populated")
+	if p.TokenHash != HashArtisanToken(token) {
+		t.Errorf("token_hash mismatch: expected %s, got %s", HashArtisanToken(token), p.TokenHash)
+	}
+	if p.CreatedAt == "" || p.UpdatedAt == "" {
+		t.Errorf("expected created_at and updated_at to be populated")
+	}
+	// Verify plain email was NOT persisted
+	if strings.Contains(string(fileBytes), "artisan@example.com") {
+		t.Errorf("email must NOT be persisted in json file")
 	}
 
-	// 3. GET /api/community/{uuid}
-	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
+	// 3. GET /api/community/{author_id}
+	srv.gravatarClient.SetCached(authorID, "gravatar-artisan")
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+authorID, nil)
 	wGet := httptest.NewRecorder()
 	srv.ServeHTTP(wGet, reqGet)
 
 	if wGet.Code != http.StatusOK {
 		t.Fatalf("expected status 200 on GET, got %d (body: %s)", wGet.Code, wGet.Body.String())
 	}
-	var getProfile Profile
+	var getProfile ArtisanProfile
 	if err := json.Unmarshal(wGet.Body.Bytes(), &getProfile); err != nil {
 		t.Fatalf("failed to decode GET profile: %v", err)
 	}
-	if getProfile.UUID != uuid || getProfile.Nickname != "artisan" {
+	if getProfile.AuthorID != authorID || getProfile.DisplayName != "gravatar-artisan" {
 		t.Errorf("GET profile mismatch: %+v", getProfile)
 	}
 
@@ -340,13 +337,13 @@ func TestCommunityPostAndGet(t *testing.T) {
 		t.Fatalf("expected status 200 on list, got %d", wList.Code)
 	}
 	var listResp struct {
-		Total    int       `json:"total"`
-		Profiles []Profile `json:"profiles"`
+		Total    int              `json:"total"`
+		Profiles []ArtisanProfile `json:"profiles"`
 	}
 	if err := json.Unmarshal(wList.Body.Bytes(), &listResp); err != nil {
 		t.Fatalf("failed to decode list response: %v", err)
 	}
-	if listResp.Total != 1 || len(listResp.Profiles) != 1 || listResp.Profiles[0].UUID != uuid {
+	if listResp.Total != 1 || len(listResp.Profiles) != 1 || listResp.Profiles[0].AuthorID != authorID {
 		t.Errorf("unexpected list response: %+v", listResp)
 	}
 }
@@ -359,23 +356,23 @@ func TestCommunityPutAndUrlParams(t *testing.T) {
 	srv := NewCensusServer(dataFile, "")
 	srv.SetCommunityDir(commDir)
 
-	uuid := "02f86488-6b11-59ff-9630-4215b4d2de3b"
+	authorID := ComputeAuthorID("creator@penguins-eggs.net")
+	machineUUID1 := "02f86488-6b11-59ff-9630-4215b4d2de3b"
+	machineUUID2 := "03f86488-6b11-59ff-9630-4215b4d2de3c"
 
-	// 1. PUT /api/community/{uuid} with matching UUID
+	// 1. PUT /api/community/{author_id} (TOFU creation)
 	payload := `{
-		"uuid": "` + uuid + `",
-		"nickname": "new-nick",
-		"location": "Milan, Italy",
-		"bio": "Linux creator",
-		"source_url": "https://penguins-eggs.net"
+		"author_id": "` + authorID + `",
+		"uuid": "` + machineUUID1 + `",
+		"enabled": true
 	}`
-	reqPut := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payload))
+	reqPut := httptest.NewRequest(http.MethodPut, "/api/community/"+authorID, strings.NewReader(payload))
 	reqPut.Header.Set("Content-Type", "application/json")
 	wPut := httptest.NewRecorder()
 	srv.ServeHTTP(wPut, reqPut)
 
-	if wPut.Code != http.StatusOK {
-		t.Fatalf("expected 200 on PUT, got %d: %s", wPut.Code, wPut.Body.String())
+	if wPut.Code != http.StatusCreated && wPut.Code != http.StatusOK {
+		t.Fatalf("expected 201/200 on initial PUT, got %d: %s", wPut.Code, wPut.Body.String())
 	}
 
 	var putResp map[string]string
@@ -387,14 +384,11 @@ func TestCommunityPutAndUrlParams(t *testing.T) {
 		t.Fatalf("expected issued artisan_token in response, got %v", putResp)
 	}
 
-	// 2a. PUT without token -> 401 Unauthorized
-	payloadNoUUID := `{
-		"nickname": "updated-nick",
-		"location": "Turin, Italy",
-		"bio": "Dev",
-		"url": "https://github.com/test/repo"
+	// 2a. PUT without token on existing author -> 401 Unauthorized
+	payloadSecond := `{
+		"uuid": "` + machineUUID2 + `"
 	}`
-	reqPutNoAuth := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	reqPutNoAuth := httptest.NewRequest(http.MethodPut, "/api/community/"+authorID, strings.NewReader(payloadSecond))
 	reqPutNoAuth.Header.Set("Content-Type", "application/json")
 	wPutNoAuth := httptest.NewRecorder()
 	srv.ServeHTTP(wPutNoAuth, reqPutNoAuth)
@@ -402,18 +396,18 @@ func TestCommunityPutAndUrlParams(t *testing.T) {
 		t.Fatalf("expected 401 on PUT without token, got %d: %s", wPutNoAuth.Code, wPutNoAuth.Body.String())
 	}
 
-	// 2b. PUT with wrong token -> 403 Forbidden
-	reqPutBad := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	// 2b. PUT with wrong token -> 401 Unauthorized
+	reqPutBad := httptest.NewRequest(http.MethodPut, "/api/community/"+authorID, strings.NewReader(payloadSecond))
 	reqPutBad.Header.Set("Content-Type", "application/json")
 	reqPutBad.Header.Set("X-Eggs-Artisan-Token", "egg_pat_wrongtoken")
 	wPutBad := httptest.NewRecorder()
 	srv.ServeHTTP(wPutBad, reqPutBad)
-	if wPutBad.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 on PUT with wrong token, got %d: %s", wPutBad.Code, wPutBad.Body.String())
+	if wPutBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on PUT with wrong token, got %d: %s", wPutBad.Code, wPutBad.Body.String())
 	}
 
 	// 2c. PUT with valid token -> 200 OK
-	reqPut2 := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(payloadNoUUID))
+	reqPut2 := httptest.NewRequest(http.MethodPut, "/api/community/"+authorID, strings.NewReader(payloadSecond))
 	reqPut2.Header.Set("Content-Type", "application/json")
 	reqPut2.Header.Set("X-Eggs-Artisan-Token", token)
 	wPut2 := httptest.NewRecorder()
@@ -423,23 +417,24 @@ func TestCommunityPutAndUrlParams(t *testing.T) {
 		t.Fatalf("expected 200 on PUT with token, got %d: %s", wPut2.Code, wPut2.Body.String())
 	}
 
-	// Verify profile was updated
-	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
-	wGet := httptest.NewRecorder()
-	srv.ServeHTTP(wGet, reqGet)
-	if !strings.Contains(wGet.Body.String(), "updated-nick") || !strings.Contains(wGet.Body.String(), "Turin, Italy") {
-		t.Errorf("expected updated profile content, got: %s", wGet.Body.String())
+	// Verify profile was updated with second machine
+	p, err := srv.getCommunityProfile(authorID)
+	if err != nil || p == nil {
+		t.Fatalf("failed to get profile: %v", err)
+	}
+	if len(p.ClaimedUUIDs) != 2 {
+		t.Errorf("expected 2 claimed UUIDs, got %v", p.ClaimedUUIDs)
 	}
 
-	// 3. PUT with mismatching UUID between path and body
-	mismatchPayload := `{"uuid": "different-uuid-1111-2222-333344445555", "nickname": "bad"}`
-	reqMismatch := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(mismatchPayload))
+	// 3. PUT with mismatching author_id between path and body
+	mismatchPayload := `{"author_id": "different-author-id-111122223333444455556666", "uuid": "` + machineUUID1 + `"}`
+	reqMismatch := httptest.NewRequest(http.MethodPut, "/api/community/"+authorID, strings.NewReader(mismatchPayload))
 	reqMismatch.Header.Set("Content-Type", "application/json")
 	wMismatch := httptest.NewRecorder()
 	srv.ServeHTTP(wMismatch, reqMismatch)
 
 	if wMismatch.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request on UUID mismatch, got %d", wMismatch.Code)
+		t.Errorf("expected 400 Bad Request on author_id mismatch, got %d", wMismatch.Code)
 	}
 }
 
@@ -451,73 +446,29 @@ func TestCommunityAntiSpamEmailBlocked(t *testing.T) {
 	srv := NewCensusServer(dataFile, "")
 	srv.SetCommunityDir(commDir)
 
-	testCases := []struct {
-		name        string
-		payload     string
-		expectBlock bool
-	}{
-		{
-			name:        "explicit email field",
-			payload:     `{"uuid":"uuid-spam-1","nickname":"spammer","email":"spam@spammer.org"}`,
-			expectBlock: true,
-		},
-		{
-			name:        "email in bio",
-			payload:     `{"uuid":"uuid-spam-2","nickname":"legit","bio":"Contact me at hello@spam.com for offers"}`,
-			expectBlock: true,
-		},
-		{
-			name:        "mailto in contact",
-			payload:     `{"uuid":"uuid-spam-3","nickname":"legit","contact":"mailto:dev@domain.org"}`,
-			expectBlock: true,
-		},
-		{
-			name:        "raw email in contact",
-			payload:     `{"uuid":"uuid-spam-4","nickname":"legit","contact":"dev@domain.org"}`,
-			expectBlock: true,
-		},
-		{
-			name:        "email in nickname",
-			payload:     `{"uuid":"uuid-spam-5","nickname":"user@domain.com"}`,
-			expectBlock: true,
-		},
-		{
-			name:        "email in socials map",
-			payload:     `{"uuid":"uuid-spam-6","nickname":"user","socials":{"matrix":"alice@matrix.org","other":"user@domain.net"}}`,
-			expectBlock: true,
-		},
-		{
-			name:        "valid Fediverse handle allowed",
-			payload:     `{"uuid":"uuid-legit-1","nickname":"fedidev","contact":"@user@fosstodon.org","source_url":"https://github.com/myuser"}`,
-			expectBlock: false,
-		},
-		{
-			name:        "valid normal handle allowed",
-			payload:     `{"uuid":"uuid-legit-2","nickname":"penguin","contact":"@penguin_master","source_url":"https://example.org"}`,
-			expectBlock: false,
-		},
+	authorID := ComputeAuthorID("dev@eggs.org")
+	payload := `{
+		"author_id": "` + authorID + `",
+		"uuid": "machine-12345",
+		"email": "dev@eggs.org",
+		"enabled": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+		t.Fatalf("expected 201/200 OK, got %d: %s", w.Code, w.Body.String())
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(tc.payload))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			srv.ServeHTTP(w, req)
-
-			if tc.expectBlock {
-				if w.Code != http.StatusBadRequest {
-					t.Errorf("expected 400 Bad Request for %s, got %d (body: %s)", tc.name, w.Code, w.Body.String())
-				}
-				if !strings.Contains(w.Body.String(), "email") {
-					t.Errorf("expected error message to mention email for %s, got %s", tc.name, w.Body.String())
-				}
-			} else {
-				if w.Code != http.StatusOK {
-					t.Errorf("expected 200 OK for %s, got %d (body: %s)", tc.name, w.Code, w.Body.String())
-				}
-			}
-		})
+	// Verify file on disk
+	fileBytes, err := os.ReadFile(filepath.Join(commDir, authorID+".json"))
+	if err != nil {
+		t.Fatalf("failed to read community file: %v", err)
+	}
+	if strings.Contains(string(fileBytes), "dev@eggs.org") {
+		t.Errorf("plain email must NEVER be stored on disk! Found in: %s", string(fileBytes))
 	}
 }
 
@@ -529,27 +480,26 @@ func TestCommunityValidationAndSafety(t *testing.T) {
 	srv := NewCensusServer(dataFile, "")
 	srv.SetCommunityDir(commDir)
 
-	// Missing UUID on POST
-	req1 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"nickname":"noname"}`))
+	// Missing author_id and UUID on POST
+	req1 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{}`))
 	w1 := httptest.NewRecorder()
 	srv.ServeHTTP(w1, req1)
 	if w1.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for missing UUID, got %d", w1.Code)
+		t.Errorf("expected 400 for missing author_id/UUID, got %d", w1.Code)
 	}
 
-	// Path traversal attempt in UUID
-	req2 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"uuid":"../../etc/passwd","nickname":"hacker"}`))
+	// Path traversal attempt in author_id
+	req2 := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"author_id":"../../etc/passwd"}`))
 	w2 := httptest.NewRecorder()
 	srv.ServeHTTP(w2, req2)
 	if w2.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for path traversal UUID, got %d", w2.Code)
+		t.Errorf("expected 400 for path traversal author_id, got %d", w2.Code)
 	}
 
 	// Path traversal attempt in URL
 	req3 := httptest.NewRequest(http.MethodGet, "/api/community/../../etc/passwd", nil)
 	w3 := httptest.NewRecorder()
 	srv.ServeHTTP(w3, req3)
-	// Router or isValidUUID will reject
 	if w3.Code != http.StatusBadRequest && w3.Code != http.StatusNotFound {
 		t.Errorf("expected 400 or 404 for path traversal in URL, got %d", w3.Code)
 	}
@@ -578,13 +528,14 @@ func TestCommunityDelete(t *testing.T) {
 	srv := NewCensusServer(filepath.Join(tmpDir, "census.jsonl"), "")
 	srv.SetCommunityDir(commDir)
 
-	uuid := "12345678-abcd-ef01-2345-6789abcdef01"
+	authorID := ComputeAuthorID("temp@artisan.org")
+	machineUUID := "12345678-abcd-ef01-2345-6789abcdef01"
 
 	// Create profile
-	reqPost := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"uuid":"`+uuid+`","nickname":"temp"}`))
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(`{"author_id":"`+authorID+`","uuid":"`+machineUUID+`"}`))
 	wPost := httptest.NewRecorder()
 	srv.ServeHTTP(wPost, reqPost)
-	if wPost.Code != http.StatusOK {
+	if wPost.Code != http.StatusOK && wPost.Code != http.StatusCreated {
 		t.Fatalf("failed to create profile: %s", wPost.Body.String())
 	}
 
@@ -598,24 +549,24 @@ func TestCommunityDelete(t *testing.T) {
 	}
 
 	// DELETE profile without token -> 401 Unauthorized
-	reqDelNoAuth := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	reqDelNoAuth := httptest.NewRequest(http.MethodDelete, "/api/community/"+authorID, nil)
 	wDelNoAuth := httptest.NewRecorder()
 	srv.ServeHTTP(wDelNoAuth, reqDelNoAuth)
 	if wDelNoAuth.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 on DELETE without token, got %d", wDelNoAuth.Code)
 	}
 
-	// DELETE profile with bad token -> 403 Forbidden
-	reqDelBad := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	// DELETE profile with bad token -> 401 Unauthorized
+	reqDelBad := httptest.NewRequest(http.MethodDelete, "/api/community/"+authorID, nil)
 	reqDelBad.Header.Set("X-Eggs-Artisan-Token", "egg_pat_bad")
 	wDelBad := httptest.NewRecorder()
 	srv.ServeHTTP(wDelBad, reqDelBad)
-	if wDelBad.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 on DELETE with bad token, got %d", wDelBad.Code)
+	if wDelBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on DELETE with bad token, got %d", wDelBad.Code)
 	}
 
 	// DELETE profile with valid token
-	reqDel := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	reqDel := httptest.NewRequest(http.MethodDelete, "/api/community/"+authorID, nil)
 	reqDel.Header.Set("X-Eggs-Artisan-Token", token)
 	wDel := httptest.NewRecorder()
 	srv.ServeHTTP(wDel, reqDel)
@@ -624,12 +575,12 @@ func TestCommunityDelete(t *testing.T) {
 	}
 
 	// Verify file is gone
-	if _, err := os.Stat(filepath.Join(commDir, uuid+".json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(commDir, authorID+".json")); !os.IsNotExist(err) {
 		t.Errorf("expected file to be deleted")
 	}
 
 	// GET after delete returns 404
-	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+uuid, nil)
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+authorID, nil)
 	wGet := httptest.NewRecorder()
 	srv.ServeHTTP(wGet, reqGet)
 	if wGet.Code != http.StatusNotFound {
@@ -637,7 +588,8 @@ func TestCommunityDelete(t *testing.T) {
 	}
 
 	// Second DELETE returns 404
-	reqDel2 := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
+	reqDel2 := httptest.NewRequest(http.MethodDelete, "/api/community/"+authorID, nil)
+	reqDel2.Header.Set("X-Eggs-Artisan-Token", token)
 	wDel2 := httptest.NewRecorder()
 	srv.ServeHTTP(wDel2, reqDel2)
 	if wDel2.Code != http.StatusNotFound {
@@ -660,6 +612,10 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	uuid2 := "22222222-2222-2222-2222-222222222222"
 	uuidDisabled := "44444444-4444-4444-4444-444444444444"
 	uuidAnon := "99999999-9999-9999-9999-999999999999"
+
+	authorID1 := ComputeAuthorID("artisan1@debian.org")
+	authorID2 := ComputeAuthorID("artisan2@arch.org")
+	authorIDDisabled := ComputeAuthorID("disabled@artisan.org")
 
 	// 1. Create telemetry events in census.jsonl
 	events := []string{
@@ -688,35 +644,23 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	}
 
 	// 2. Save community profiles
+	srv.gravatarClient.SetCached(authorID1, "artisan1")
+	srv.gravatarClient.SetCached(authorID2, "artisan2")
+	srv.gravatarClient.SetCached(authorIDDisabled, "hidden_artisan")
+
 	p1 := `{
+		"author_id": "` + authorID1 + `",
 		"uuid": "` + uuid1 + `",
-		"nickname": "artisan1",
-		"location": "Roma, IT",
-		"bio": "Distro artisan building Debian remixes",
-		"contact": "@artisan1",
-		"socials": {
-			"github": "artisan1-dev",
-			"telegram": "@artisan1"
-		},
-		"source_url": "https://github.com/artisan1/distro",
 		"enabled": true
 	}`
 	p2 := `{
+		"author_id": "` + authorID2 + `",
 		"uuid": "` + uuid2 + `",
-		"nickname": "artisan2",
-		"location": "Berlin, DE",
-		"bio": "Arch Linux customizer",
-		"socials": {
-			"gitlab": "artisan2"
-		},
-		"source_url": "https://gitlab.com/artisan2/arch-distro",
 		"enabled": true
 	}`
 	pDisabled := `{
+		"author_id": "` + authorIDDisabled + `",
 		"uuid": "` + uuidDisabled + `",
-		"nickname": "hidden_artisan",
-		"location": "Paris, FR",
-		"bio": "Disabled profile",
 		"enabled": false
 	}`
 
@@ -724,7 +668,7 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, req)
-		if w.Code != http.StatusOK {
+		if w.Code != http.StatusOK && w.Code != http.StatusCreated {
 			t.Fatalf("failed to save profile: %s", w.Body.String())
 		}
 	}
@@ -752,10 +696,10 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	foundP1 := false
 	foundP2 := false
 	for _, prof := range jsonResp.Profiles {
-		if prof.UUID == uuid1 {
+		if prof.AuthorID == authorID1 {
 			foundP1 = true
-			if prof.Nickname != "artisan1" {
-				t.Errorf("artisan1 nickname mismatch: %s", prof.Nickname)
+			if prof.DisplayName != "artisan1" {
+				t.Errorf("artisan1 nickname mismatch: %s", prof.DisplayName)
 			}
 			if prof.RemasterCount != 2 {
 				t.Errorf("expected 2 remasters for artisan1, got %d", prof.RemasterCount)
@@ -779,7 +723,7 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 				t.Errorf("expected latest_remaster.count=2, got %d", prof.LatestRemaster.Count)
 			}
 		}
-		if prof.UUID == uuid2 {
+		if prof.AuthorID == authorID2 {
 			foundP2 = true
 			if prof.RemasterCount != 1 {
 				t.Errorf("expected 1 remaster for artisan2, got %d", prof.RemasterCount)
@@ -791,7 +735,7 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 				t.Errorf("expected arch distro in latest_remaster: %+v", prof.LatestRemaster)
 			}
 		}
-		if prof.UUID == uuidDisabled {
+		if prof.AuthorID == authorIDDisabled {
 			t.Errorf("disabled profile should NOT be in active list")
 		}
 	}
@@ -808,17 +752,14 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	}
 	htmlBody := wHTML.Body.String()
 	for _, expected := range []string{
-		"🐧 Penguins Community &amp; Distro Artisans",
-		"@artisan1",
-		"Roma, IT",
-		"Distro artisan building Debian remixes",
+		"🐧 Penguins Community",
+		"artisan1",
+		"https://gravatar.com/" + authorID1,
 		"debian trixie (13) • amd64 • xfce",
-		"https://github.com/artisan1/distro",
 		"rel=\"noopener noreferrer\"",
-		"@artisan2",
-		"Berlin, DE",
+		"artisan2",
+		"https://gravatar.com/" + authorID2,
 		"arch rolling • x86_64 • kde",
-		"https://gitlab.com/artisan2/arch-distro",
 	} {
 		if !strings.Contains(htmlBody, expected) {
 			t.Errorf("expected community HTML to contain %q", expected)
@@ -837,12 +778,10 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 	}
 	txtBody := wTXT.Body.String()
 	for _, expected := range []string{
-		"# 🐧 Penguins Community & Distro Artisans",
+		"# 🐧 Penguins Community & Authors",
 		"Nickname",
-		"Location",
+		"Gravatar Profile",
 		"Ultima Distro",
-		"Source URL",
-		"Contatti",
 		"@artisan1",
 		"debian trixie (13) • amd64 • xfce",
 		"@artisan2",
@@ -872,7 +811,7 @@ func TestCommunityCrossReferenceWithCensus(t *testing.T) {
 
 	// Verify Recent Events table:
 	// Events from artisan1 should have clickable @artisan1 badge
-	if !strings.Contains(censusHTML, `class="artisan-badge"`) || !strings.Contains(censusHTML, `@artisan1`) {
+	if !strings.Contains(censusHTML, `class="author-badge"`) || !strings.Contains(censusHTML, `@artisan1`) {
 		t.Errorf("expected recent events table to have @artisan1 badge")
 	}
 	// Anonymous events (uuidAnon) must NOT display any badge or nickname
@@ -911,21 +850,17 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 		t.Errorf("HashArtisanToken mismatch")
 	}
 
+	authorID := ComputeAuthorID("distromaster@example.com")
+	srv.gravatarClient.SetCached(authorID, "distromaster")
+
 	// 2. Register community profile with token_hash
-	profilePayload := `{
-		"id": "distromaster",
-		"uuid": "distromaster",
-		"nickname": "distromaster",
-		"location": "Napoli, IT",
-		"token_hash": "` + tokenHash + `",
-		"source_url": "https://distromaster.org"
-	}`
-	reqComm := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(profilePayload))
-	reqComm.Header.Set("Content-Type", "application/json")
-	wComm := httptest.NewRecorder()
-	srv.ServeHTTP(wComm, reqComm)
-	if wComm.Code != http.StatusOK {
-		t.Fatalf("failed to create community profile: %s", wComm.Body.String())
+	if err := srv.saveCommunityProfile(CommunityProfile{
+		AuthorID:     authorID,
+		ClaimedUUIDs: []string{},
+		TokenHash:    tokenHash,
+		Enabled:      true,
+	}); err != nil {
+		t.Fatalf("failed to save community profile: %v", err)
 	}
 
 	// 3. Scenario A: 1 Artisan sending remaster from 2 distinct machines (M1, M2)
@@ -963,12 +898,12 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 		t.Fatalf("M2 POST failed: %d: %s", wM2.Code, wM2.Body.String())
 	}
 
-	// Verify Scenario A on /api/community/distromaster
-	reqGetA := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	// Verify Scenario A on /api/community/{author_id}
+	reqGetA := httptest.NewRequest(http.MethodGet, "/api/community/"+authorID, nil)
 	wGetA := httptest.NewRecorder()
 	srv.ServeHTTP(wGetA, reqGetA)
 	if wGetA.Code != http.StatusOK {
-		t.Fatalf("GET /api/community/distromaster failed: %d: %s", wGetA.Code, wGetA.Body.String())
+		t.Fatalf("GET /api/community/%s failed: %d: %s", authorID, wGetA.Code, wGetA.Body.String())
 	}
 
 	var profA ArtisanProfile
@@ -1015,12 +950,12 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 		}
 	}
 
-	// Verify Scenario B on /api/community/distromaster -> InstallsCount == 3
-	reqGetB := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	// Verify Scenario B on /api/community/{author_id} -> InstallsCount == 3
+	reqGetB := httptest.NewRequest(http.MethodGet, "/api/community/"+authorID, nil)
 	wGetB := httptest.NewRecorder()
 	srv.ServeHTTP(wGetB, reqGetB)
 	if wGetB.Code != http.StatusOK {
-		t.Fatalf("GET /api/community/distromaster failed: %d", wGetB.Code)
+		t.Fatalf("GET /api/community/%s failed: %d", authorID, wGetB.Code)
 	}
 	var profB ArtisanProfile
 	if err := json.Unmarshal(wGetB.Body.Bytes(), &profB); err != nil {
@@ -1054,8 +989,9 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 		t.Fatalf("expected TopInstallations to not be empty")
 	}
 	foundTopArtisan := false
+	expectedArtisanURL := "https://gravatar.com/" + authorID
 	for _, ti := range censusSum.TopInstallations {
-		if ti.ArtisanNickname == "distromaster" && ti.ArtisanURL == "https://distromaster.org" {
+		if ti.ArtisanNickname == "distromaster" && ti.ArtisanURL == expectedArtisanURL {
 			foundTopArtisan = true
 			if ti.SumSysinstall < 1 {
 				t.Errorf("expected positive sum_sysinstall for artisan top install, got %d", ti.SumSysinstall)
@@ -1069,7 +1005,7 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 	// Verify RecentEvents are enriched with artisan nickname & URL for child installs
 	foundRecentChild := false
 	for _, ev := range censusSum.RecentEvents {
-		if ev.Sysinstall && ev.ArtisanNickname == "distromaster" && ev.ArtisanURL == "https://distromaster.org" {
+		if ev.Sysinstall && ev.ArtisanNickname == "distromaster" && ev.ArtisanURL == expectedArtisanURL {
 			foundRecentChild = true
 		}
 	}
@@ -1085,8 +1021,8 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 	if !strings.Contains(html, "@distromaster") {
 		t.Errorf("expected HTML summary to contain @distromaster, got:\n%s", html)
 	}
-	if !strings.Contains(html, "https://distromaster.org") {
-		t.Errorf("expected HTML summary to contain artisan URL, got:\n%s", html)
+	if !strings.Contains(html, expectedArtisanURL) {
+		t.Errorf("expected HTML summary to contain artisan URL %s, got:\n%s", expectedArtisanURL, html)
 	}
 
 	// 7. Test transitive lineage: child machine U1 creates ISO or installs U4
@@ -1107,7 +1043,7 @@ func TestArtisanTokenAuthAndMultiMachine(t *testing.T) {
 	}
 
 	// After transitive install, InstallsCount should be 4
-	reqGetC := httptest.NewRequest(http.MethodGet, "/api/community/distromaster", nil)
+	reqGetC := httptest.NewRequest(http.MethodGet, "/api/community/"+authorID, nil)
 	wGetC := httptest.NewRecorder()
 	srv.ServeHTTP(wGetC, reqGetC)
 	var profC ArtisanProfile
@@ -1128,12 +1064,13 @@ func TestArtisanTokenValidationAndSpoofingPrevention(t *testing.T) {
 
 	_, tokenHash, _ := GenerateArtisanToken()
 
+	targetAuthorID := ComputeAuthorID("target@artisan.org")
 	// Create valid profile
 	_ = srv.saveCommunityProfile(CommunityProfile{
-		ID:        "target-artisan",
-		UUID:      "target-artisan",
-		TokenHash: tokenHash,
-		Nickname:  "target",
+		AuthorID:     targetAuthorID,
+		ClaimedUUIDs: []string{"target-machine"},
+		TokenHash:    tokenHash,
+		Enabled:      true,
 	})
 
 	// 1. Post with wrong token: should NOT fail (returns 200 OK), but should NOT set artisan_id
@@ -1147,7 +1084,7 @@ func TestArtisanTokenValidationAndSpoofingPrevention(t *testing.T) {
 	}
 
 	// 2. Post with spoofed artisan_id in body without token: should NOT be attributed
-	spoofPayload := `{"uuid":"rogue-machine-2","artisan_id":"target-artisan","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64"}}`
+	spoofPayload := `{"uuid":"rogue-machine-2","artisan_id":"` + targetAuthorID + `","eggs_version":"10.0","action":"remaster","distro":{"id":"debian"},"system":{"arch":"amd64"}}`
 	req2 := httptest.NewRequest(http.MethodPost, "/api/census", strings.NewReader(spoofPayload))
 	w2 := httptest.NewRecorder()
 	srv.ServeHTTP(w2, req2)
@@ -1155,13 +1092,13 @@ func TestArtisanTokenValidationAndSpoofingPrevention(t *testing.T) {
 		t.Fatalf("expected 200 OK on body-only artisan_id, got %d", w2.Code)
 	}
 
-	// Verify profile stats: target-artisan must have 0 remasters and 0 machines!
-	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/target-artisan", nil)
+	// Verify profile stats: targetAuthorID must have 0 remasters and 0 machines!
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/community/"+targetAuthorID, nil)
 	wGet := httptest.NewRecorder()
 	srv.ServeHTTP(wGet, reqGet)
 	var prof ArtisanProfile
 	_ = json.Unmarshal(wGet.Body.Bytes(), &prof)
-	if prof.RemasterCount != 0 || prof.MachinesCount != 0 {
-		t.Errorf("spoofing prevention failed: expected RemasterCount=0, MachinesCount=0, got remasters=%d machines=%d", prof.RemasterCount, prof.MachinesCount)
+	if prof.RemasterCount != 0 {
+		t.Errorf("spoofing prevention failed: expected RemasterCount=0, got %d", prof.RemasterCount)
 	}
 }

@@ -25,12 +25,13 @@ import (
 )
 
 type CensusServer struct {
-	mu           sync.Mutex
-	dataPath     string
-	mmdbPath     string
-	mmdb         *maxminddb.Reader
-	communityDir string
-	githubAuth   *GitHubAuthConfig
+	mu             sync.Mutex
+	dataPath       string
+	mmdbPath       string
+	mmdb           *maxminddb.Reader
+	communityDir   string
+	githubAuth     *GitHubAuthConfig
+	gravatarClient *GravatarClient
 }
 
 func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
@@ -56,10 +57,11 @@ func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
 		}
 	}
 	s := &CensusServer{
-		dataPath:     dataPath,
-		mmdbPath:     mmdbPath,
-		communityDir: commDir,
-		githubAuth:   ghAuth,
+		dataPath:       dataPath,
+		mmdbPath:       mmdbPath,
+		communityDir:   commDir,
+		githubAuth:     ghAuth,
+		gravatarClient: NewGravatarClient(6 * time.Hour),
 	}
 	if mmdbPath != "" {
 		if reader, err := maxminddb.Open(mmdbPath); err == nil {
@@ -67,6 +69,22 @@ func NewCensusServer(dataPath, mmdbPath string) *CensusServer {
 		}
 	}
 	return s
+}
+
+func (s *CensusServer) SetGravatarBaseURL(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gravatarClient != nil {
+		s.gravatarClient.SetBaseURL(url)
+	}
+}
+
+func (s *CensusServer) SetGravatarClient(client *http.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gravatarClient != nil {
+		s.gravatarClient.SetHTTPClient(client)
+	}
 }
 
 func (s *CensusServer) SetCommunityDir(dir string) {
@@ -196,18 +214,21 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	rec.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	rec.Country = s.resolveCountry(r)
 
-	// Verify artisan token if present
-	rawToken := extractArtisanToken(r)
+	// Verify author token if present
+	rawToken := extractAuthorToken(r)
 	if rawToken != "" {
 		s.mu.Lock()
 		profile, err := s.findProfileByToken(rawToken)
 		s.mu.Unlock()
 		if err == nil && profile != nil {
+			rec.AuthorID = profile.GetID()
 			rec.ArtisanID = profile.GetID()
 		} else {
+			rec.AuthorID = ""
 			rec.ArtisanID = ""
 		}
 	} else {
+		rec.AuthorID = ""
 		rec.ArtisanID = ""
 	}
 
@@ -237,8 +258,13 @@ func (s *CensusServer) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 
-func extractArtisanToken(r *http.Request) string {
-	rawToken := strings.TrimSpace(r.Header.Get("X-Eggs-Artisan-Token"))
+func extractAuthorToken(r *http.Request) string {
+	rawToken := strings.TrimSpace(r.Header.Get("X-Eggs-Author-Token"))
+	if rawToken != "" {
+		return rawToken
+	}
+	// Fallback to legacy artisan header
+	rawToken = strings.TrimSpace(r.Header.Get("X-Eggs-Artisan-Token"))
 	if rawToken != "" {
 		return rawToken
 	}
@@ -247,6 +273,11 @@ func extractArtisanToken(r *http.Request) string {
 		return strings.TrimSpace(auth[7:])
 	}
 	return ""
+}
+
+// Deprecated alias
+func extractArtisanToken(r *http.Request) string {
+	return extractAuthorToken(r)
 }
 
 func isValidUUID(u string) bool {
@@ -355,7 +386,7 @@ func (s *CensusServer) handleCommunity(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http.Request, pathUUID string) {
+func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http.Request, pathID string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	defer r.Body.Close()
 
@@ -367,244 +398,152 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 		return
 	}
 
-	var rawMap map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid JSON payload"}`))
-		return
-	}
-
-	// Anti-Spam: validate that no email address is present in the payload
-	if containsEmailInPayload(rawMap) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"email addresses are forbidden to prevent spam"}`))
-		return
-	}
-
 	var raw rawCommunityPayload
-	if err := json.Unmarshal(bodyBytes, &raw); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid JSON structure"}`))
-		return
-	}
-
-	// Support wrapping inside "community": { ... }
-	if raw.Community != nil {
-		if raw.ID == "" {
-			raw.ID = raw.Community.ID
-		}
-		if raw.UUID == "" {
-			raw.UUID = raw.Community.UUID
-		}
-		if raw.AuthType == "" {
-			raw.AuthType = raw.Community.AuthType
-		}
-		if raw.AuthID == "" {
-			raw.AuthID = raw.Community.AuthID
-		}
-		if raw.TokenHash == "" {
-			raw.TokenHash = raw.Community.TokenHash
-		}
-		if raw.Token == "" {
-			raw.Token = raw.Community.Token
-		}
-		if raw.Nickname == "" {
-			raw.Nickname = raw.Community.Nickname
-		}
-		if raw.Location == "" {
-			raw.Location = raw.Community.Location
-		}
-		if raw.Bio == "" {
-			raw.Bio = raw.Community.Bio
-		}
-		if raw.Contact == "" {
-			raw.Contact = raw.Community.Contact
-		}
-		if raw.Social == nil {
-			raw.Social = raw.Community.Social
-		}
-		if raw.Socials == nil {
-			raw.Socials = raw.Community.Socials
-		}
-		if raw.SourceURL == "" {
-			raw.SourceURL = raw.Community.SourceURL
-		}
-		if raw.URL == "" {
-			raw.URL = raw.Community.URL
-		}
-		if raw.Website == "" {
-			raw.Website = raw.Community.Website
-		}
-		if raw.RepositoryURL == "" {
-			raw.RepositoryURL = raw.Community.RepositoryURL
-		}
-		if raw.RepoURL == "" {
-			raw.RepoURL = raw.Community.RepoURL
-		}
-		if raw.Enabled == nil {
-			raw.Enabled = raw.Community.Enabled
-		}
-	}
-
-	finalID := strings.TrimSpace(raw.ID)
-	finalUUID := strings.TrimSpace(raw.UUID)
-	if finalID == "" && finalUUID != "" {
-		finalID = finalUUID
-	}
-	if finalUUID == "" && finalID != "" {
-		finalUUID = finalID
-	}
-
-	if pathUUID != "" {
-		if (finalID != "" && !strings.EqualFold(finalID, pathUUID)) && (finalUUID != "" && !strings.EqualFold(finalUUID, pathUUID)) {
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &raw); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"uuid in path does not match uuid in payload"}`))
+			_, _ = w.Write([]byte(`{"error":"invalid JSON structure"}`))
 			return
-		}
-		if finalID == "" {
-			finalID = pathUUID
-		}
-		if finalUUID == "" {
-			finalUUID = pathUUID
 		}
 	}
 
-	if !isValidUUID(finalID) && !isValidUUID(finalUUID) {
+	authorID := strings.TrimSpace(raw.AuthorID)
+	if authorID == "" && pathID != "" {
+		authorID = pathID
+	}
+	if authorID == "" && strings.TrimSpace(raw.Email) != "" {
+		authorID = ComputeAuthorID(raw.Email)
+	}
+	if authorID == "" && strings.TrimSpace(raw.UUID) != "" && pathID == "" {
+		authorID = strings.TrimSpace(raw.UUID)
+	}
+
+	if pathID != "" && authorID != "" && !strings.EqualFold(pathID, authorID) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"valid uuid is required"}`))
+		_, _ = w.Write([]byte(`{"error":"author_id in path does not match payload"}`))
 		return
 	}
 
-	sourceURL := strings.TrimSpace(raw.SourceURL)
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(raw.URL)
-	}
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(raw.Website)
-	}
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(raw.RepositoryURL)
-	}
-	if sourceURL == "" {
-		sourceURL = strings.TrimSpace(raw.RepoURL)
+	if !isValidUUID(authorID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"valid author_id is required"}`))
+		return
 	}
 
-	contact := strings.TrimSpace(raw.Contact)
-	socials := make(map[string]string)
-	if raw.Socials != nil {
-		for k, v := range raw.Socials {
-			kTrim := strings.TrimSpace(k)
-			vTrim := strings.TrimSpace(v)
-			if kTrim != "" && vTrim != "" {
-				socials[kTrim] = vTrim
-			}
-		}
-	}
-
-	if raw.Social != nil {
-		switch s := raw.Social.(type) {
-		case string:
-			if contact == "" {
-				contact = strings.TrimSpace(s)
-			}
-		case map[string]interface{}:
-			for k, v := range s {
-				kTrim := strings.TrimSpace(k)
-				if strVal, ok := v.(string); ok {
-					vTrim := strings.TrimSpace(strVal)
-					if kTrim != "" && vTrim != "" {
-						socials[kTrim] = vTrim
-					}
-				}
-			}
-		}
-	}
-
-	defaultEnabled := true
-	if raw.Enabled != nil {
-		defaultEnabled = *raw.Enabled
+	machineUUID := strings.TrimSpace(raw.UUID)
+	if machineUUID != "" && !isValidUUID(machineUUID) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid uuid format"}`))
+		return
 	}
 
 	s.mu.Lock()
-	existing, _ := s.getCommunityProfile(finalID)
-	if existing == nil && finalUUID != finalID {
-		existing, _ = s.getCommunityProfile(finalUUID)
-	}
+	existing, _ := s.getCommunityProfile(authorID)
 	s.mu.Unlock()
 
-	callerToken := extractArtisanToken(r)
-	var issuedToken string
-	tokenHash := ""
+	callerToken := extractAuthorToken(r)
 
-	if existing != nil && existing.TokenHash != "" {
-		if callerToken == "" {
+	// Caso A: Primo avvio (TOFU - l'author_id non esiste ancora sul server)
+	if existing == nil {
+		rawToken, tokenHash, err := GenerateAuthorToken()
+		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"failed to generate author token"}`))
 			return
 		}
-		callerHash := HashArtisanToken(callerToken)
-		if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
+
+		s.mu.Lock()
+		if machineUUID != "" {
+			_ = s.claimUUIDForAuthor(authorID, machineUUID)
+		}
+
+		claimed := []string{}
+		if machineUUID != "" {
+			claimed = append(claimed, machineUUID)
+		}
+
+		enabled := true
+		if raw.Enabled != nil {
+			enabled = *raw.Enabled
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		profile := CommunityProfile{
+			AuthorID:     authorID,
+			TokenHash:    tokenHash,
+			ClaimedUUIDs: claimed,
+			Enabled:      enabled,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+
+		err = s.saveCommunityProfile(profile)
+		s.mu.Unlock()
+
+		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":"forbidden: invalid artisan token"}`))
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"failed to save community profile"}`))
 			return
 		}
-		tokenHash = existing.TokenHash
-	} else {
-		explicitHash := strings.TrimSpace(raw.TokenHash)
-		if explicitHash == "" && strings.TrimSpace(raw.Token) != "" {
-			explicitHash = HashArtisanToken(strings.TrimSpace(raw.Token))
+
+		respMap := map[string]string{
+			"status":        "ok",
+			"author_id":     authorID,
+			"uuid":          authorID,
+			"author_token":  rawToken,
+			"artisan_token": rawToken, // backwards compatibility
 		}
-		if explicitHash != "" {
-			tokenHash = explicitHash
-		} else {
-			rawTok, th, err := GenerateArtisanToken()
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"error":"failed to generate artisan token"}`))
-				return
-			}
-			tokenHash = th
-			issuedToken = rawTok
-		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		respBytes, _ := json.Marshal(respMap)
+		_, _ = w.Write(respBytes)
+		return
 	}
 
-	authType := strings.TrimSpace(raw.AuthType)
-	authID := strings.TrimSpace(raw.AuthID)
-	if existing != nil {
-		if authType == "" {
-			authType = existing.AuthType
-		}
-		if authID == "" {
-			authID = existing.AuthID
-		}
+	// Caso B: Autore già esistente
+	if callerToken == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: author token required"}`))
+		return
 	}
-
-	profile := CommunityProfile{
-		ID:        finalID,
-		UUID:      finalUUID,
-		AuthType:  authType,
-		AuthID:    authID,
-		TokenHash: tokenHash,
-		Nickname:  strings.TrimSpace(raw.Nickname),
-		Location:  strings.TrimSpace(raw.Location),
-		Bio:       strings.TrimSpace(raw.Bio),
-		Contact:   contact,
-		Socials:   socials,
-		SourceURL: sourceURL,
-		Enabled:   &defaultEnabled,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	callerHash := HashAuthorToken(callerToken)
+	if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid author token"}`))
+		return
 	}
 
 	s.mu.Lock()
-	err = s.saveCommunityProfile(profile)
+	if machineUUID != "" {
+		_ = s.claimUUIDForAuthor(authorID, machineUUID)
+		found := false
+		for _, u := range existing.ClaimedUUIDs {
+			if strings.EqualFold(u, machineUUID) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			existing.ClaimedUUIDs = append(existing.ClaimedUUIDs, machineUUID)
+		}
+	}
+
+	enabled := true
+	if raw.Enabled != nil {
+		enabled = *raw.Enabled
+	}
+	existing.Enabled = enabled
+	existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	err = s.saveCommunityProfile(*existing)
 	s.mu.Unlock()
 
 	if err != nil {
@@ -615,27 +554,23 @@ func (s *CensusServer) handleSaveCommunityProfile(w http.ResponseWriter, r *http
 	}
 
 	respMap := map[string]string{
-		"status": "ok",
-		"uuid":   profile.UUID,
-		"id":     profile.GetID(),
+		"status":    "ok",
+		"author_id": authorID,
+		"uuid":      authorID,
 	}
-	if issuedToken != "" {
-		respMap["artisan_token"] = issuedToken
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	resp, _ := json.Marshal(respMap)
-	_, _ = w.Write(resp)
+	respBytes, _ := json.Marshal(respMap)
+	_, _ = w.Write(respBytes)
 }
 
-func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
+func (s *CensusServer) handleGetCommunityProfile(w http.ResponseWriter, r *http.Request, authorID string) {
 	s.mu.Lock()
-	profile, err := s.getCommunityProfile(uuid)
+	profile, err := s.getCommunityProfile(authorID)
 	dataPath := s.dataPath
 	s.mu.Unlock()
 
-	if err != nil {
+	if err != nil || profile == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"community profile not found"}`))
@@ -661,9 +596,10 @@ func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *htt
 	s.mu.Lock()
 	dataPath := s.dataPath
 	commDir := s.getCommunityDir()
+	gClient := s.gravatarClient
 	s.mu.Unlock()
 
-	artisans, err := loadEnrichedArtisans(dataPath, commDir)
+	authors, err := loadEnrichedAuthors(dataPath, commDir, gClient)
 	if err != nil && !os.IsNotExist(err) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -676,26 +612,26 @@ func (s *CensusServer) handleListCommunityProfiles(w http.ResponseWriter, r *htt
 	case "html":
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(renderCommunityHTML(artisans, s.IsGitHubAuthEnabled())))
+		_, _ = w.Write([]byte(renderCommunityHTML(authors, s.IsGitHubAuthEnabled())))
 	case "txt":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(renderCommunityText(artisans)))
+		_, _ = w.Write([]byte(renderCommunityText(authors)))
 	default:
 		type listResponse struct {
-			Total    int              `json:"total"`
-			Profiles []ArtisanProfile `json:"profiles"`
+			Total    int             `json:"total"`
+			Profiles []AuthorProfile `json:"profiles"`
 		}
 		writePrettyJSON(w, listResponse{
-			Total:    len(artisans),
-			Profiles: artisans,
+			Total:    len(authors),
+			Profiles: authors,
 		})
 	}
 }
 
-func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *http.Request, uuid string) {
+func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *http.Request, authorID string) {
 	s.mu.Lock()
-	existing, err := s.getCommunityProfile(uuid)
+	existing, err := s.getCommunityProfile(authorID)
 	s.mu.Unlock()
 
 	if err != nil || existing == nil {
@@ -705,32 +641,52 @@ func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *ht
 		return
 	}
 
-	if existing.TokenHash != "" {
-		callerToken := extractArtisanToken(r)
-		if callerToken == "" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
-			return
-		}
-		callerHash := HashArtisanToken(callerToken)
-		if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":"forbidden: invalid artisan token"}`))
-			return
-		}
+	callerToken := extractAuthorToken(r)
+	if callerToken == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: author token required"}`))
+		return
+	}
+	callerHash := HashAuthorToken(callerToken)
+	if subtle.ConstantTimeCompare([]byte(existing.TokenHash), []byte(callerHash)) != 1 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid author token"}`))
+		return
 	}
 
-	s.mu.Lock()
-	err = s.deleteCommunityProfile(uuid)
-	s.mu.Unlock()
+	// Read optional body to check if a specific machine UUID is being dissociated
+	var delPayload struct {
+		AuthorID string `json:"author_id"`
+		UUID     string `json:"uuid"`
+	}
+	if r.Body != nil {
+		bodyBytes, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+		_ = json.Unmarshal(bodyBytes, &delPayload)
+	}
 
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"community profile not found"}`))
-		return
+	uuidToDissociate := strings.TrimSpace(delPayload.UUID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if uuidToDissociate != "" {
+		newClaimed := make([]string, 0, len(existing.ClaimedUUIDs))
+		for _, u := range existing.ClaimedUUIDs {
+			if !strings.EqualFold(u, uuidToDissociate) {
+				newClaimed = append(newClaimed, u)
+			}
+		}
+		if len(newClaimed) == 0 {
+			_ = s.deleteCommunityProfile(existing.GetID())
+		} else {
+			existing.ClaimedUUIDs = newClaimed
+			existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			_ = s.saveCommunityProfile(*existing)
+		}
+	} else {
+		_ = s.deleteCommunityProfile(existing.GetID())
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -739,11 +695,11 @@ func (s *CensusServer) handleDeleteCommunityProfile(w http.ResponseWriter, r *ht
 }
 
 func (s *CensusServer) handleCommunityMe(w http.ResponseWriter, r *http.Request) {
-	token := extractArtisanToken(r)
+	token := extractAuthorToken(r)
 	if token == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"unauthorized: artisan token required"}`))
+		_, _ = w.Write([]byte(`{"error":"unauthorized: author token required"}`))
 		return
 	}
 
@@ -754,7 +710,7 @@ func (s *CensusServer) handleCommunityMe(w http.ResponseWriter, r *http.Request)
 	if err != nil || profile == nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid artisan token"}`))
+		_, _ = w.Write([]byte(`{"error":"unauthorized: invalid author token"}`))
 		return
 	}
 
@@ -769,7 +725,7 @@ func (s *CensusServer) handleCommunityMe(w http.ResponseWriter, r *http.Request)
 
 func (s *CensusServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
-	summary, err := loadCensusSummary(s.dataPath, s.getCommunityDir())
+	summary, err := loadCensusSummary(s.dataPath, s.getCommunityDir(), s.gravatarClient)
 	s.mu.Unlock()
 
 	if err != nil && !os.IsNotExist(err) {

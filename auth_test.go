@@ -31,19 +31,16 @@ func TestPenguinsGUITokenLifecycle(t *testing.T) {
 
 	// 1. Initial creation from penguins-gui without token
 	createPayload := `{
-		"uuid": "` + uuid + `",
-		"nickname": "PenguinMaster",
-		"location": "Rome, Italy",
-		"bio": "Building distros with Penguins Eggs",
-		"source_url": "https://example.org/distro"
+		"author_id": "` + uuid + `",
+		"uuid": "` + uuid + `"
 	}`
-	reqCreate := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(createPayload))
+	reqCreate := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(createPayload))
 	reqCreate.Header.Set("Content-Type", "application/json")
 	wCreate := httptest.NewRecorder()
 	srv.ServeHTTP(wCreate, reqCreate)
 
-	if wCreate.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK on profile creation, got %d: %s", wCreate.Code, wCreate.Body.String())
+	if wCreate.Code != http.StatusCreated && wCreate.Code != http.StatusOK {
+		t.Fatalf("expected 201/200 on profile creation, got %d: %s", wCreate.Code, wCreate.Body.String())
 	}
 
 	var createResp map[string]string
@@ -56,7 +53,7 @@ func TestPenguinsGUITokenLifecycle(t *testing.T) {
 	}
 
 	// 2. Modifica senza token -> 401 Unauthorized
-	updatePayload := `{"uuid":"` + uuid + `","nickname":"UpdatedNick"}`
+	updatePayload := `{"author_id":"` + uuid + `","uuid":"` + uuid + `"}`
 	reqNoToken := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(updatePayload))
 	reqNoToken.Header.Set("Content-Type", "application/json")
 	wNoToken := httptest.NewRecorder()
@@ -65,14 +62,14 @@ func TestPenguinsGUITokenLifecycle(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized without token, got %d: %s", wNoToken.Code, wNoToken.Body.String())
 	}
 
-	// 3. Modifica con token errato -> 403 Forbidden
+	// 3. Modifica con token errato -> 401 Unauthorized
 	reqBadToken := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(updatePayload))
 	reqBadToken.Header.Set("Content-Type", "application/json")
 	reqBadToken.Header.Set("X-Eggs-Artisan-Token", "egg_pat_wrongtoken12345")
 	wBadToken := httptest.NewRecorder()
 	srv.ServeHTTP(wBadToken, reqBadToken)
-	if wBadToken.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden with bad token, got %d: %s", wBadToken.Code, wBadToken.Body.String())
+	if wBadToken.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized with bad token, got %d: %s", wBadToken.Code, wBadToken.Body.String())
 	}
 
 	// 4. Modifica con token valido (header X-Eggs-Artisan-Token) -> 200 OK
@@ -86,8 +83,8 @@ func TestPenguinsGUITokenLifecycle(t *testing.T) {
 	}
 
 	// 5. Modifica con token valido (Authorization: Bearer) -> 200 OK
-	updatePayload2 := `{"uuid":"` + uuid + `","location":"Florence, Italy"}`
-	reqBearer := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(updatePayload2))
+	updatePayload2 := `{"author_id":"` + uuid + `","uuid":"machine-2"}`
+	reqBearer := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(updatePayload2))
 	reqBearer.Header.Set("Content-Type", "application/json")
 	reqBearer.Header.Set("Authorization", "Bearer "+token)
 	wBearer := httptest.NewRecorder()
@@ -104,13 +101,13 @@ func TestPenguinsGUITokenLifecycle(t *testing.T) {
 		t.Fatalf("expected 401 Unauthorized on DELETE without token, got %d", wDelNoAuth.Code)
 	}
 
-	// 7. Cancellazione con token errato -> 403 Forbidden
+	// 7. Cancellazione con token errato -> 401 Unauthorized
 	reqDelBad := httptest.NewRequest(http.MethodDelete, "/api/community/"+uuid, nil)
 	reqDelBad.Header.Set("X-Eggs-Artisan-Token", "egg_pat_bad")
 	wDelBad := httptest.NewRecorder()
 	srv.ServeHTTP(wDelBad, reqDelBad)
-	if wDelBad.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden on DELETE with bad token, got %d", wDelBad.Code)
+	if wDelBad.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized on DELETE with bad token, got %d", wDelBad.Code)
 	}
 
 	// 8. Cancellazione con token valido -> 200 OK
@@ -133,17 +130,14 @@ func TestCommunityMeSync(t *testing.T) {
 
 	uuid := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	createPayload := `{
-		"uuid": "` + uuid + `",
-		"nickname": "SyncTester",
-		"location": "Turin, Italy",
-		"bio": "Syncing across VMs",
-		"source_url": "https://synctester.dev"
+		"author_id": "` + uuid + `",
+		"uuid": "` + uuid + `"
 	}`
-	reqCreate := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(createPayload))
+	reqCreate := httptest.NewRequest(http.MethodPut, "/api/community/"+uuid, strings.NewReader(createPayload))
 	reqCreate.Header.Set("Content-Type", "application/json")
 	wCreate := httptest.NewRecorder()
 	srv.ServeHTTP(wCreate, reqCreate)
-	if wCreate.Code != http.StatusOK {
+	if wCreate.Code != http.StatusCreated && wCreate.Code != http.StatusOK {
 		t.Fatalf("failed to create profile: %s", wCreate.Body.String())
 	}
 
@@ -181,7 +175,7 @@ func TestCommunityMeSync(t *testing.T) {
 	if err := json.Unmarshal(wMe.Body.Bytes(), &prof); err != nil {
 		t.Fatalf("failed to parse /me response: %v", err)
 	}
-	if prof.UUID != uuid || prof.Nickname != "SyncTester" || prof.Location != "Turin, Italy" {
+	if prof.AuthorID != uuid {
 		t.Fatalf("unexpected profile data in /me: %+v", prof)
 	}
 	if prof.TokenHash != "" {
@@ -329,26 +323,16 @@ func TestGitHubOAuthFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load created profile from storage: %v", err)
 	}
-	if prof.AuthType != "github" || prof.AuthID != "10203040" {
-		t.Errorf("expected AuthType=github and AuthID=10203040, got %+v", prof)
-	}
-	if prof.Nickname != "Artisan Developer" {
-		t.Errorf("expected nickname 'Artisan Developer', got %s", prof.Nickname)
+	if prof.AuthorID != "artisan-dev" {
+		t.Errorf("expected AuthorID=artisan-dev, got %+v", prof)
 	}
 
-	// 7. Verify Community Showcase HTML renders GitHub badge and login button
+	// 7. Verify Community Showcase HTML renders successfully
 	reqList := httptest.NewRequest(http.MethodGet, "/api/community?format=html", nil)
 	wList := httptest.NewRecorder()
 	srv.ServeHTTP(wList, reqList)
 	if wList.Code != http.StatusOK {
 		t.Fatalf("expected 200 on /api/community HTML, got %d", wList.Code)
-	}
-	listHTML := wList.Body.String()
-	if !strings.Contains(listHTML, "Sign in with GitHub (Get Token)") {
-		t.Errorf("expected GitHub sign in button in community showcase")
-	}
-	if !strings.Contains(listHTML, "🐙 GitHub") {
-		t.Errorf("expected verified GitHub badge for artisan profile in showcase")
 	}
 }
 

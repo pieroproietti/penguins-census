@@ -18,7 +18,7 @@
     <div class="links">
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
       {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}<a class="btn" href="#unique-ips">Unique IPs</a>{{end}}
-      <a class="btn" href="/api/community">🐧 Artisans</a>
+      <a class="btn" href="/api/community">🐧 Authors</a>
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
     </div>
@@ -55,8 +55,8 @@
           <td>{{.Country}}</td>
           <td>
             {{.Distro}}
-            {{if .ArtisanNickname}}
-            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{if .AuthorNickname}}
+            <a href="{{.AuthorURL}}" class="author-badge" target="_blank" rel="noopener noreferrer" title="Respin Author">{{.AuthorNickname}}</a>
             {{end}}
           </td>
           <td>{{.Desktop}}</td>
@@ -94,8 +94,8 @@
           <td>{{.Country}}</td>
           <td>
             {{.Distro}}
-            {{if .ArtisanNickname}}
-            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{if .AuthorNickname}}
+            <a href="{{.AuthorURL}}" class="author-badge" target="_blank" rel="noopener noreferrer" title="Respin Author">{{.AuthorNickname}}</a>
             {{end}}
           </td>
           <td>{{.Desktop}}</td>
@@ -167,8 +167,8 @@
           <td>{{.Country}}</td>
           <td>
             {{.Distro}}
-            {{if .ArtisanNickname}}
-            <a href="{{.ArtisanURL}}" class="artisan-badge" target="_blank" rel="noopener noreferrer" title="Distro Artisan">{{.ArtisanNickname}}</a>
+            {{if .AuthorNickname}}
+            <a href="{{.AuthorURL}}" class="author-badge" target="_blank" rel="noopener noreferrer" title="Respin Author">{{.AuthorNickname}}</a>
             {{end}}
           </td>
           <td>{{.Desktop}}</td>

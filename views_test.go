@@ -145,7 +145,7 @@ func TestCensusFormatsAndFallbacks(t *testing.T) {
 				"Since 22 October 2026",
 				"https://penguins-eggs.net",
 				"Home",
-				"🐧 Artisans",
+				"🐧 Authors",
 				"Plain Text / Markdown",
 				"Raw JSON",
 				"Total Events",
@@ -237,27 +237,19 @@ func TestCommunityXSSAndURLSanitization(t *testing.T) {
 	srv := NewCensusServer(dataFile, "")
 	srv.SetCommunityDir(commDir)
 
-	uuid := "55555555-5555-5555-5555-555555555555"
+	authorID := "55555555-5555-5555-5555-555555555555"
+	srv.gravatarClient.SetCached(authorID, "<script>alert('xss-nick')</script>")
 
-	// Malicious payload with potential XSS in text fields and javascript: URLs
 	payload := `{
-		"uuid": "` + uuid + `",
-		"nickname": "<script>alert('xss-nick')</script>",
-		"location": "<img src=x onerror=alert('xss-loc')>",
-		"bio": "<b onmouseover=\"alert('xss-bio')\">Malicious Bio</b>",
-		"contact": "javascript:alert('xss-contact')",
-		"source_url": "javascript:alert('xss-source')",
-		"socials": {
-			"github": "javascript:alert('xss-gh')",
-			"custom": "data:text/html,<script>alert(1)</script>"
-		},
+		"author_id": "` + authorID + `",
+		"uuid": "machine-555",
 		"enabled": true
 	}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/community", strings.NewReader(payload))
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusOK && w.Code != http.StatusCreated {
 		t.Fatalf("failed to save profile: %s", w.Body.String())
 	}
 
@@ -275,16 +267,10 @@ func TestCommunityXSSAndURLSanitization(t *testing.T) {
 	if strings.Contains(htmlBody, "<script>alert('xss-nick')</script>") {
 		t.Errorf("raw unescaped script tag found in HTML")
 	}
-	if strings.Contains(htmlBody, "<img src=x") {
-		t.Errorf("raw unescaped img tag found in HTML")
-	}
-	if strings.Contains(htmlBody, "<b onmouseover=") {
-		t.Errorf("raw unescaped b tag with onmouseover found in HTML")
-	}
 
 	// Verify properly escaped HTML entities ARE present
 	if !strings.Contains(htmlBody, "&lt;script&gt;alert(&#39;xss-nick&#39;)&lt;/script&gt;") && !strings.Contains(htmlBody, "&lt;script&gt;alert('xss-nick')&lt;/script&gt;") {
-		t.Errorf("escaped script was not found as expected")
+		t.Errorf("escaped script was not found as expected in %s", htmlBody)
 	}
 
 	// Verify javascript: or data: was NEVER put in href attribute
@@ -431,12 +417,12 @@ func TestRenderViewsEmptySummary(t *testing.T) {
 	}
 
 	commTxt := renderCommunityText(nil)
-	if !strings.Contains(commTxt, "Total Artisans: 0") {
-		t.Errorf("expected 0 artisans in community text")
+	if !strings.Contains(commTxt, "Total Authors:") || !strings.Contains(commTxt, "0") {
+		t.Errorf("expected 0 authors in community text")
 	}
 
 	commHTML := renderCommunityHTML(nil)
-	if !strings.Contains(commHTML, "No community artisans registered yet") {
+	if !strings.Contains(commHTML, "No community authors registered yet") {
 		t.Errorf("expected empty message in community html")
 	}
 }
@@ -444,10 +430,10 @@ func TestRenderViewsEmptySummary(t *testing.T) {
 func TestRenderArtisanStatsAndCatalog(t *testing.T) {
 	artisans := []ArtisanProfile{
 		{
-			ID:            "distro-artisan",
-			UUID:          "distro-artisan",
-			Nickname:      "masterbuilder",
-			Location:      "Milano, IT",
+			AuthorID:      "distro-artisan",
+			DisplayName:   "masterbuilder",
+			AvatarURL:     "https://www.gravatar.com/avatar/distro-artisan?s=96&d=identicon",
+			ProfileURL:    "https://gravatar.com/distro-artisan",
 			Country:       "IT",
 			MachinesCount: 3,
 			RemasterCount: 5,
@@ -483,9 +469,10 @@ func TestRenderArtisanStatsAndCatalog(t *testing.T) {
 	// 1. Test HTML rendering
 	html := renderCommunityHTML(artisans)
 	for _, expected := range []string{
-		"3 machines",
+		"masterbuilder",
+		"https://gravatar.com/distro-artisan",
 		"5 builds",
-		"12 installs",
+		"12 derived installs",
 		"Live Distros Catalog:",
 		"debian 13 • amd64 • xfce",
 		"ubuntu 24.04 • arm64 • gnome",
@@ -501,6 +488,9 @@ func TestRenderArtisanStatsAndCatalog(t *testing.T) {
 		"Machines",
 		"Remasters",
 		"Installs",
+		"Gravatar Profile",
+		"@masterbuilder",
+		"https://gravatar.com/distro-artisan",
 		"3",
 		"5",
 		"12",

@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -244,77 +243,36 @@ func (s *CensusServer) handleGitHubCallback(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	authIDStr := strconv.FormatInt(ghUser.ID, 10)
-
+	authorID := cleanLogin
 	s.mu.Lock()
-	existing, _ := s.getCommunityProfile(cleanLogin)
-	if existing == nil {
-		// Look up by auth_id in case user previously used another login
-		profiles, _ := s.listCommunityProfiles()
-		for _, p := range profiles {
-			if p.AuthType == "github" && p.AuthID == authIDStr {
-				existing = &p
-				break
-			}
-		}
-	}
+	existing, _ := s.getCommunityProfile(authorID)
 
 	var targetProfile CommunityProfile
 	if existing != nil {
 		targetProfile = *existing
 	} else {
 		targetProfile = CommunityProfile{
-			ID:   cleanLogin,
-			UUID: cleanLogin,
+			AuthorID:     authorID,
+			ClaimedUUIDs: []string{},
+			Enabled:      true,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 
-	targetProfile.AuthType = "github"
-	targetProfile.AuthID = authIDStr
-	if targetProfile.Nickname == "" {
-		if ghUser.Name != "" {
-			targetProfile.Nickname = ghUser.Name
-		} else {
-			targetProfile.Nickname = ghUser.Login
-		}
-	}
-	if targetProfile.Bio == "" && ghUser.Bio != "" {
-		targetProfile.Bio = ghUser.Bio
-	}
-	if targetProfile.Location == "" && ghUser.Location != "" {
-		targetProfile.Location = ghUser.Location
-	}
-	if targetProfile.SourceURL == "" {
-		if ghUser.HTMLURL != "" {
-			targetProfile.SourceURL = ghUser.HTMLURL
-		} else if ghUser.Blog != "" {
-			targetProfile.SourceURL = ghUser.Blog
-		}
-	}
-	if targetProfile.Socials == nil {
-		targetProfile.Socials = make(map[string]string)
-	}
-	if _, ok := targetProfile.Socials["github"]; !ok && ghUser.HTMLURL != "" {
-		targetProfile.Socials["github"] = ghUser.HTMLURL
-	}
-
-	rawToken, tokenHash, err := GenerateArtisanToken()
+	rawToken, tokenHash, err := GenerateAuthorToken()
 	if err != nil {
 		s.mu.Unlock()
-		http.Error(w, "failed to generate artisan token", http.StatusInternalServerError)
+		http.Error(w, "failed to generate author token", http.StatusInternalServerError)
 		return
 	}
 
 	targetProfile.TokenHash = tokenHash
+	targetProfile.Enabled = true
 	targetProfile.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	defaultEnabled := true
-	if targetProfile.Enabled == nil {
-		targetProfile.Enabled = &defaultEnabled
-	}
 
 	if err := s.saveCommunityProfile(targetProfile); err != nil {
 		s.mu.Unlock()
-		http.Error(w, "failed to save artisan profile: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to save author profile: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	s.mu.Unlock()
@@ -335,7 +293,7 @@ func renderGitHubSuccessHTML(w http.ResponseWriter, profile CommunityProfile, ra
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Penguins Artisan Token - GitHub Authentication</title>
+<title>Penguins Author Token - GitHub Authentication</title>
 <style>
 %s
 .token-card {
@@ -405,19 +363,19 @@ func renderGitHubSuccessHTML(w http.ResponseWriter, profile CommunityProfile, ra
     %s
     <div>
       <h2 style="margin:0 0 0.25rem 0; font-size:1.3rem;">Welcome, @%s!</h2>
-      <div style="color:var(--muted); font-size:0.85rem;">Authenticated via GitHub &bull; Distro Artisan</div>
+      <div style="color:var(--muted); font-size:0.85rem;">Authenticated via GitHub &bull; Respin Author</div>
     </div>
   </div>
-  <p>Here is your <strong>Artisan Personal Access Token</strong>. Use it to authenticate your remaster machines and synchronize your profile in <code>penguins-gui</code>.</p>
+  <p>Here is your <strong>Author Personal Access Token</strong>. Use it to authenticate your remaster machines and synchronize your profile in <code>penguins-gui</code>.</p>
   <div class="token-code-box">
     <code class="token-code" id="tokenVal">%s</code>
-    <button class="token-copy-btn" onclick="copyToken()">📋 Copy Artisan Token</button>
+    <button class="token-copy-btn" onclick="copyToken()">📋 Copy Author Token</button>
   </div>
   <div class="token-guide">
     <strong>How to use:</strong><br>
-    &bull; In <strong>penguins-gui</strong>: paste into <em>Settings &rarr; Artisan Token</em>.<br>
-    &bull; In <strong>penguins-eggs</strong>: send via <code>X-Eggs-Artisan-Token</code> header.<br>
-    &bull; Store this token safely. It links all your ISO builds to your artisan profile.
+    &bull; In <strong>penguins-gui</strong>: paste into <em>Settings &rarr; Author Token</em>.<br>
+    &bull; In <strong>penguins-eggs</strong>: send via <code>X-Eggs-Author-Token</code> header.<br>
+    &bull; Store this token safely. It links all your ISO builds to your author profile.
   </div>
   <div style="margin-top:1.75rem; display:flex; justify-content:space-between; align-items:center;">
     <a href="/api/community" class="btn">&larr; Back to Community Showcase</a>
@@ -429,7 +387,7 @@ function copyToken() {
   var t = document.getElementById("tokenVal").innerText.trim();
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(t).then(function() {
-      alert("Artisan Token copied to clipboard!");
+      alert("Author Token copied to clipboard!");
     }).catch(function() {
       prompt("Copy token manually:", t);
     });

@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-func GenerateArtisanToken() (rawToken, tokenHash string, err error) {
+func GenerateAuthorToken() (rawToken, tokenHash string, err error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", "", err
@@ -36,9 +36,19 @@ func GenerateArtisanToken() (rawToken, tokenHash string, err error) {
 	return rawToken, tokenHash, nil
 }
 
-func HashArtisanToken(rawToken string) string {
+// Deprecated alias
+func GenerateArtisanToken() (rawToken, tokenHash string, err error) {
+	return GenerateAuthorToken()
+}
+
+func HashAuthorToken(rawToken string) string {
 	h := sha256.Sum256([]byte(rawToken))
 	return hex.EncodeToString(h[:])
+}
+
+// Deprecated alias
+func HashArtisanToken(rawToken string) string {
+	return HashAuthorToken(rawToken)
 }
 
 func (s *CensusServer) findProfileByToken(rawToken string) (*CommunityProfile, error) {
@@ -46,7 +56,7 @@ func (s *CensusServer) findProfileByToken(rawToken string) (*CommunityProfile, e
 	if rawToken == "" {
 		return nil, fmt.Errorf("token is empty")
 	}
-	targetHash := HashArtisanToken(rawToken)
+	targetHash := HashAuthorToken(rawToken)
 
 	profiles, err := s.listCommunityProfiles()
 	if err != nil {
@@ -63,13 +73,13 @@ func (s *CensusServer) findProfileByToken(rawToken string) (*CommunityProfile, e
 	return nil, fmt.Errorf("profile not found or disabled")
 }
 
-func (s *CensusServer) IssueArtisanToken(artisanID string) (string, error) {
-	artisanID = strings.TrimSpace(artisanID)
-	if artisanID == "" {
-		return "", fmt.Errorf("artisan id cannot be empty")
+func (s *CensusServer) IssueAuthorToken(authorID string) (string, error) {
+	authorID = strings.TrimSpace(authorID)
+	if authorID == "" {
+		return "", fmt.Errorf("author id cannot be empty")
 	}
 
-	rawToken, tokenHash, err := GenerateArtisanToken()
+	rawToken, tokenHash, err := GenerateAuthorToken()
 	if err != nil {
 		return "", err
 	}
@@ -77,20 +87,20 @@ func (s *CensusServer) IssueArtisanToken(artisanID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	p, _ := s.getCommunityProfile(artisanID)
+	p, _ := s.getCommunityProfile(authorID)
+	now := time.Now().UTC().Format(time.RFC3339)
 	if p == nil {
-		enabled := true
 		p = &CommunityProfile{
-			ID:        artisanID,
-			UUID:      artisanID,
-			Nickname:  artisanID,
-			TokenHash: tokenHash,
-			Enabled:   &enabled,
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			AuthorID:     authorID,
+			TokenHash:    tokenHash,
+			ClaimedUUIDs: []string{},
+			Enabled:      true,
+			CreatedAt:    now,
+			UpdatedAt:    now,
 		}
 	} else {
 		p.TokenHash = tokenHash
-		p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		p.UpdatedAt = now
 	}
 
 	if err := s.saveCommunityProfile(*p); err != nil {
@@ -99,27 +109,52 @@ func (s *CensusServer) IssueArtisanToken(artisanID string) (string, error) {
 	return rawToken, nil
 }
 
+// Deprecated alias
+func (s *CensusServer) IssueArtisanToken(artisanID string) (string, error) {
+	return s.IssueAuthorToken(artisanID)
+}
+
 func (s *CensusServer) saveCommunityProfile(profile CommunityProfile) error {
 	dir := s.getCommunityDir()
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return err
 	}
 
-	id := profile.GetID()
-	if profile.ID == "" {
-		profile.ID = id
-	}
-	if profile.UUID == "" {
-		profile.UUID = id
+	authorID := profile.GetID()
+	if authorID == "" {
+		return fmt.Errorf("author_id cannot be empty")
 	}
 
-	data, err := json.MarshalIndent(profile, "", "  ")
+	claimed := profile.ClaimedUUIDs
+	if claimed == nil {
+		claimed = []string{}
+	}
+
+	createdAt := profile.CreatedAt
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	updatedAt := profile.UpdatedAt
+	if updatedAt == "" {
+		updatedAt = createdAt
+	}
+
+	rec := CommunityProfile{
+		AuthorID:     authorID,
+		TokenHash:    profile.TokenHash,
+		ClaimedUUIDs: claimed,
+		Enabled:      profile.Enabled,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}
+
+	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
 
-	target := filepath.Join(dir, fmt.Sprintf("%s.json", id))
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", authorID))
 	tmpFile := target + ".tmp"
 
 	if err := os.WriteFile(tmpFile, data, 0640); err != nil {
@@ -128,30 +163,82 @@ func (s *CensusServer) saveCommunityProfile(profile CommunityProfile) error {
 	return os.Rename(tmpFile, target)
 }
 
-func (s *CensusServer) getCommunityProfile(idOrUUID string) (*CommunityProfile, error) {
+func (s *CensusServer) claimUUIDForAuthor(authorID string, uuid string) error {
 	dir := s.getCommunityDir()
-	target := filepath.Join(dir, fmt.Sprintf("%s.json", idOrUUID))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		base := strings.TrimSuffix(entry.Name(), ".json")
+		if strings.EqualFold(base, authorID) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var p CommunityProfile
+		if err := json.Unmarshal(data, &p); err != nil {
+			continue
+		}
+		if strings.EqualFold(p.GetID(), authorID) {
+			continue
+		}
+
+		changed := false
+		newClaimed := make([]string, 0, len(p.ClaimedUUIDs))
+		for _, u := range p.ClaimedUUIDs {
+			if strings.EqualFold(u, uuid) {
+				changed = true
+			} else {
+				newClaimed = append(newClaimed, u)
+			}
+		}
+		if changed {
+			p.ClaimedUUIDs = newClaimed
+			p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			_ = s.saveCommunityProfile(p)
+		}
+	}
+	return nil
+}
+
+func (s *CensusServer) getCommunityProfile(idOrAuthorID string) (*CommunityProfile, error) {
+	dir := s.getCommunityDir()
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", idOrAuthorID))
 
 	data, err := os.ReadFile(target)
 	if err == nil {
 		var p CommunityProfile
 		if err := json.Unmarshal(data, &p); err == nil {
-			if p.ID == "" {
-				p.ID = p.UUID
+			if p.AuthorID == "" {
+				p.AuthorID = idOrAuthorID
 			}
-			if p.UUID == "" {
-				p.UUID = p.ID
+			if p.ClaimedUUIDs == nil {
+				p.ClaimedUUIDs = []string{}
 			}
 			return &p, nil
 		}
 	}
 
-	// Fallback: search directory for profile where p.GetID() == idOrUUID or p.UUID == idOrUUID
+	// Fallback: search directory for profile where AuthorID == idOrAuthorID or ClaimedUUIDs contains it
 	profiles, errList := s.listCommunityProfiles()
 	if errList == nil {
 		for _, p := range profiles {
-			if p.GetID() == idOrUUID || p.UUID == idOrUUID || p.ID == idOrUUID {
+			if strings.EqualFold(p.AuthorID, idOrAuthorID) {
 				return &p, nil
+			}
+			for _, u := range p.ClaimedUUIDs {
+				if strings.EqualFold(u, idOrAuthorID) {
+					return &p, nil
+				}
 			}
 		}
 	}
@@ -184,11 +271,11 @@ func (s *CensusServer) listCommunityProfiles() ([]CommunityProfile, error) {
 		}
 		var p CommunityProfile
 		if err := json.Unmarshal(data, &p); err == nil {
-			if p.ID == "" {
-				p.ID = p.UUID
+			if p.AuthorID == "" {
+				p.AuthorID = strings.TrimSuffix(entry.Name(), ".json")
 			}
-			if p.UUID == "" {
-				p.UUID = p.ID
+			if p.ClaimedUUIDs == nil {
+				p.ClaimedUUIDs = []string{}
 			}
 			if p.GetID() != "" {
 				profiles = append(profiles, p)
@@ -198,9 +285,9 @@ func (s *CensusServer) listCommunityProfiles() ([]CommunityProfile, error) {
 	return profiles, nil
 }
 
-func (s *CensusServer) deleteCommunityProfile(idOrUUID string) error {
+func (s *CensusServer) deleteCommunityProfile(authorID string) error {
 	dir := s.getCommunityDir()
-	target := filepath.Join(dir, fmt.Sprintf("%s.json", idOrUUID))
+	target := filepath.Join(dir, fmt.Sprintf("%s.json", authorID))
 	err := os.Remove(target)
 	if err == nil {
 		return nil
@@ -222,7 +309,7 @@ func (s *CensusServer) deleteCommunityProfile(idOrUUID string) error {
 		}
 		var p CommunityProfile
 		if errUnmarshal := json.Unmarshal(data, &p); errUnmarshal == nil {
-			if p.GetID() == idOrUUID || p.UUID == idOrUUID || p.ID == idOrUUID {
+			if strings.EqualFold(p.GetID(), authorID) {
 				return os.Remove(path)
 			}
 		}
@@ -305,10 +392,7 @@ func scanSingleLogFile(filePath string, handleLine func(line []byte)) error {
 
 
 func isCommunityProfileEnabled(p CommunityProfile) bool {
-	if p.Enabled == nil {
-		return true
-	}
-	return *p.Enabled
+	return p.Enabled
 }
 
 
@@ -332,7 +416,7 @@ func parseFlexibleTimestamp(s string) time.Time {
 	return time.Time{}
 }
 
-func getArtisanActivityTime(a *ArtisanProfile) time.Time {
+func getAuthorActivityTime(a *AuthorProfile) time.Time {
 	tUp := parseFlexibleTimestamp(a.UpdatedAt)
 	tRem := parseFlexibleTimestamp(a.LastRemasterAt)
 	if tRem.After(tUp) {
@@ -341,45 +425,53 @@ func getArtisanActivityTime(a *ArtisanProfile) time.Time {
 	return tUp
 }
 
-func sortArtisansByActivity(artisans []ArtisanProfile) {
-	sort.Slice(artisans, func(i, j int) bool {
-		ti := getArtisanActivityTime(&artisans[i])
-		tj := getArtisanActivityTime(&artisans[j])
+func sortAuthorsByActivity(authors []AuthorProfile) {
+	sort.Slice(authors, func(i, j int) bool {
+		ti := getAuthorActivityTime(&authors[i])
+		tj := getAuthorActivityTime(&authors[j])
 		if !ti.Equal(tj) {
 			return ti.After(tj)
 		}
-		if artisans[i].Nickname != artisans[j].Nickname {
-			return artisans[i].Nickname < artisans[j].Nickname
+		if authors[i].DisplayName != authors[j].DisplayName {
+			return authors[i].DisplayName < authors[j].DisplayName
 		}
-		return artisans[i].GetID() < artisans[j].GetID()
+		return authors[i].AuthorID < authors[j].AuthorID
 	})
 }
 
-type artisanCollector struct {
+// Deprecated alias
+func sortArtisansByActivity(artisans []AuthorProfile) {
+	sortAuthorsByActivity(artisans)
+}
+
+type authorCollector struct {
 	profile        CommunityProfile
 	country        string
 	lastRemasterAt string
 	remasterCount  int
 	installsCount  int
-	latestRemaster *ArtisanRemasterInfo
-	liveDistrosMap map[string]*ArtisanLiveSummary
+	latestRemaster *AuthorRemasterInfo
+	liveDistrosMap map[string]*AuthorLiveSummary
 }
 
-func resolveArtisan(rec CensusRecord, directMachines map[string]map[string]bool, parentMap map[string]string, activeProfiles map[string]CommunityProfile) (directArtisan, derivedArtisan string) {
+func resolveAuthor(rec CensusRecord, directMachines map[string]map[string]bool, parentMap map[string]string, activeProfiles map[string]CommunityProfile) (directAuthor, derivedAuthor string) {
 	uuid := strings.TrimSpace(rec.UUID)
-	recArtisanID := strings.TrimSpace(rec.ArtisanID)
+	recAuthorID := strings.TrimSpace(rec.AuthorID)
+	if recAuthorID == "" {
+		recAuthorID = strings.TrimSpace(rec.ArtisanID) // fallback
+	}
 
-	// 1. Direct artisan by authenticated ArtisanID
-	if recArtisanID != "" {
-		if _, ok := activeProfiles[recArtisanID]; ok {
-			directArtisan = recArtisanID
+	// 1. Direct author by authenticated AuthorID
+	if recAuthorID != "" {
+		if _, ok := activeProfiles[recAuthorID]; ok {
+			directAuthor = recAuthorID
 		}
 	}
-	// 2. Direct artisan by machine UUID
-	if directArtisan == "" && uuid != "" {
+	// 2. Direct author by machine UUID
+	if directAuthor == "" && uuid != "" {
 		for aID, machines := range directMachines {
 			if machines[uuid] {
-				directArtisan = aID
+				directAuthor = aID
 				break
 			}
 		}
@@ -393,27 +485,39 @@ func resolveArtisan(rec CensusRecord, directMachines map[string]map[string]bool,
 		for curr != "" && !visited[curr] {
 			visited[curr] = true
 			for aID, machines := range directMachines {
-				if machines[curr] || curr == aID || (activeProfiles[aID].UUID != "" && curr == activeProfiles[aID].UUID) {
-					derivedArtisan = aID
+				if machines[curr] || curr == aID {
+					derivedAuthor = aID
 					break
 				}
 			}
-			if derivedArtisan != "" {
+			if derivedAuthor != "" {
 				break
 			}
 			curr = parentMap[curr]
 		}
 	}
 
-	return directArtisan, derivedArtisan
+	return directAuthor, derivedAuthor
 }
 
-func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfile {
+// Deprecated alias
+func resolveArtisan(rec CensusRecord, directMachines map[string]map[string]bool, parentMap map[string]string, activeProfiles map[string]CommunityProfile) (directArtisan, derivedArtisan string) {
+	return resolveAuthor(rec, directMachines, parentMap, activeProfiles)
+}
+
+var defaultGravatarClient = NewGravatarClient(6 * time.Hour)
+
+func enrichAuthors(dataPath string, profiles []CommunityProfile, gClients ...*GravatarClient) []AuthorProfile {
 	if len(profiles) == 0 {
-		return []ArtisanProfile{}
+		return []AuthorProfile{}
 	}
 
-	collectors := make(map[string]*artisanCollector, len(profiles))
+	gClient := defaultGravatarClient
+	if len(gClients) > 0 && gClients[0] != nil {
+		gClient = gClients[0]
+	}
+
+	collectors := make(map[string]*authorCollector, len(profiles))
 	activeMap := make(map[string]CommunityProfile, len(profiles))
 	directMachines := make(map[string]map[string]bool, len(profiles))
 	parentMap := make(map[string]string)
@@ -421,11 +525,14 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 	for _, p := range profiles {
 		id := p.GetID()
 		activeMap[id] = p
-		collectors[id] = &artisanCollector{
+		collectors[id] = &authorCollector{
 			profile:        p,
-			liveDistrosMap: make(map[string]*ArtisanLiveSummary),
+			liveDistrosMap: make(map[string]*AuthorLiveSummary),
 		}
 		directMachines[id] = make(map[string]bool)
+		for _, u := range p.ClaimedUUIDs {
+			directMachines[id][u] = true
+		}
 	}
 
 	if dataPath != "" {
@@ -440,18 +547,14 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 				return
 			}
 
-			// Direct authenticated artisan
-			artisanID := strings.TrimSpace(rec.ArtisanID)
-			if artisanID != "" {
-				if _, ok := activeMap[artisanID]; ok {
-					directMachines[artisanID][uuid] = true
-				}
+			// Direct authenticated author
+			authorID := strings.TrimSpace(rec.AuthorID)
+			if authorID == "" {
+				authorID = strings.TrimSpace(rec.ArtisanID)
 			}
-
-			// Legacy fallback: match UUID or ID
-			for pID, p := range activeMap {
-				if uuid == pID || (p.UUID != "" && uuid == p.UUID) {
-					directMachines[pID][uuid] = true
+			if authorID != "" {
+				if _, ok := activeMap[authorID]; ok {
+					directMachines[authorID][uuid] = true
 				}
 			}
 
@@ -468,10 +571,10 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 				return
 			}
 
-			directArtisan, derivedArtisan := resolveArtisan(rec, directMachines, parentMap, activeMap)
+			directAuthor, derivedAuthor := resolveAuthor(rec, directMachines, parentMap, activeMap)
 
-			if directArtisan != "" {
-				col := collectors[directArtisan]
+			if directAuthor != "" {
+				col := collectors[directAuthor]
 				if rec.Country != "" {
 					col.country = strings.TrimSpace(rec.Country)
 				}
@@ -495,7 +598,7 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 						if rec.Country != "" {
 							col.country = strings.TrimSpace(rec.Country)
 						}
-						col.latestRemaster = &ArtisanRemasterInfo{
+						col.latestRemaster = &AuthorRemasterInfo{
 							Distro:         rec.Distro,
 							System:         rec.System,
 							Country:        col.country,
@@ -528,7 +631,7 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 							existing.LastSeen = rec.Timestamp
 						}
 					} else {
-						col.liveDistrosMap[key] = &ArtisanLiveSummary{
+						col.liveDistrosMap[key] = &AuthorLiveSummary{
 							DistroName: distroName,
 							Version:    version,
 							Desktop:    desktop,
@@ -541,21 +644,21 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 			}
 
 			// Derived sysinstall installs via ParentID
-			if rec.Action == "sysinstall" && derivedArtisan != "" {
-				col := collectors[derivedArtisan]
+			if rec.Action == "sysinstall" && derivedAuthor != "" {
+				col := collectors[derivedAuthor]
 				col.installsCount++
 			}
 		})
 	}
 
-	artisans := make([]ArtisanProfile, 0, len(collectors))
+	authors := make([]AuthorProfile, 0, len(collectors))
 	for id, col := range collectors {
 		p := col.profile
 		if col.latestRemaster != nil {
 			col.latestRemaster.Count = col.remasterCount
 		}
 
-		liveDistros := make([]ArtisanLiveSummary, 0, len(col.liveDistrosMap))
+		liveDistros := make([]AuthorLiveSummary, 0, len(col.liveDistrosMap))
 		for _, ld := range col.liveDistrosMap {
 			liveDistros = append(liveDistros, *ld)
 		}
@@ -569,19 +672,21 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 			return liveDistros[i].DistroName < liveDistros[j].DistroName
 		})
 
-		machinesCount := len(directMachines[id])
+		machinesCount := len(p.ClaimedUUIDs)
+		if len(directMachines[id]) > machinesCount {
+			machinesCount = len(directMachines[id])
+		}
 
-		artisan := ArtisanProfile{
-			ID:             id,
-			UUID:           p.UUID,
-			AuthType:       p.AuthType,
-			Nickname:       p.Nickname,
-			Location:       p.Location,
-			Bio:            p.Bio,
-			Contact:        p.Contact,
-			Socials:        p.Socials,
-			SourceURL:      p.SourceURL,
+		dispName, avatarURL, profileURL := gClient.Resolve(id)
+
+		author := AuthorProfile{
+			AuthorID:       id,
+			DisplayName:    dispName,
+			AvatarURL:      avatarURL,
+			ProfileURL:     profileURL,
+			ClaimedUUIDs:   p.ClaimedUUIDs,
 			Enabled:        p.Enabled,
+			CreatedAt:      p.CreatedAt,
 			UpdatedAt:      p.UpdatedAt,
 			Country:        col.country,
 			LastRemasterAt: col.lastRemasterAt,
@@ -591,48 +696,46 @@ func enrichArtisans(dataPath string, profiles []CommunityProfile) []ArtisanProfi
 			LiveDistros:    liveDistros,
 			LatestRemaster: col.latestRemaster,
 		}
-		artisans = append(artisans, artisan)
+		authors = append(authors, author)
 	}
 
-	sortArtisansByActivity(artisans)
-	return artisans
+	sortAuthorsByActivity(authors)
+	return authors
 }
 
-func (s *CensusServer) enrichSingleProfile(profile CommunityProfile, dataPath string) ArtisanProfile {
-	if profile.ID == "" {
-		profile.ID = profile.UUID
-	}
-	if profile.UUID == "" {
-		profile.UUID = profile.ID
-	}
-	res := enrichArtisans(dataPath, []CommunityProfile{profile})
+// Deprecated alias
+func enrichArtisans(dataPath string, profiles []CommunityProfile, gClients ...*GravatarClient) []AuthorProfile {
+	return enrichAuthors(dataPath, profiles, gClients...)
+}
+
+func (s *CensusServer) enrichSingleProfile(profile CommunityProfile, dataPath string) AuthorProfile {
+	res := enrichAuthors(dataPath, []CommunityProfile{profile}, s.gravatarClient)
 	if len(res) > 0 {
 		return res[0]
 	}
-	return ArtisanProfile{
-		ID:        profile.GetID(),
-		UUID:      profile.UUID,
-		AuthType:  profile.AuthType,
-		Nickname:  profile.Nickname,
-		Location:  profile.Location,
-		Bio:       profile.Bio,
-		Contact:   profile.Contact,
-		Socials:   profile.Socials,
-		SourceURL: profile.SourceURL,
-		Enabled:   profile.Enabled,
-		UpdatedAt: profile.UpdatedAt,
+	dispName, avatarURL, profileURL := s.gravatarClient.Resolve(profile.GetID())
+	return AuthorProfile{
+		AuthorID:      profile.GetID(),
+		DisplayName:   dispName,
+		AvatarURL:     avatarURL,
+		ProfileURL:    profileURL,
+		ClaimedUUIDs:  profile.ClaimedUUIDs,
+		Enabled:       profile.Enabled,
+		CreatedAt:     profile.CreatedAt,
+		UpdatedAt:     profile.UpdatedAt,
+		MachinesCount: len(profile.ClaimedUUIDs),
 	}
 }
 
-func loadEnrichedArtisans(dataPath, commDir string) ([]ArtisanProfile, error) {
+func loadEnrichedAuthors(dataPath, commDir string, gClients ...*GravatarClient) ([]AuthorProfile, error) {
 	if commDir == "" {
-		return []ArtisanProfile{}, nil
+		return []AuthorProfile{}, nil
 	}
 
 	entries, err := os.ReadDir(commDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []ArtisanProfile{}, nil
+			return []AuthorProfile{}, nil
 		}
 		return nil, err
 	}
@@ -650,11 +753,11 @@ func loadEnrichedArtisans(dataPath, commDir string) ([]ArtisanProfile, error) {
 		if err := json.Unmarshal(data, &p); err != nil {
 			continue
 		}
-		if p.ID == "" {
-			p.ID = p.UUID
+		if p.AuthorID == "" {
+			p.AuthorID = strings.TrimSuffix(entry.Name(), ".json")
 		}
-		if p.UUID == "" {
-			p.UUID = p.ID
+		if p.ClaimedUUIDs == nil {
+			p.ClaimedUUIDs = []string{}
 		}
 		if p.GetID() == "" || !isCommunityProfileEnabled(p) {
 			continue
@@ -663,25 +766,44 @@ func loadEnrichedArtisans(dataPath, commDir string) ([]ArtisanProfile, error) {
 	}
 
 	if len(profiles) == 0 {
-		return []ArtisanProfile{}, nil
+		return []AuthorProfile{}, nil
 	}
 
-	return enrichArtisans(dataPath, profiles), nil
+	return enrichAuthors(dataPath, profiles, gClients...), nil
 }
 
-func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, error) {
+// Deprecated alias
+func loadEnrichedArtisans(dataPath, commDir string, gClients ...*GravatarClient) ([]AuthorProfile, error) {
+	return loadEnrichedAuthors(dataPath, commDir, gClients...)
+}
+
+func loadCensusSummary(dataPath string, opts ...interface{}) (CensusSummary, error) {
 	var commDir string
-	if len(commDirs) > 0 && commDirs[0] != "" {
-		commDir = commDirs[0]
-	} else if dataPath != "" {
-		fi, err := os.Stat(dataPath)
-		if err == nil && fi.IsDir() {
-			commDir = filepath.Join(dataPath, "community")
-		} else {
-			commDir = filepath.Join(filepath.Dir(dataPath), "community")
+	var gClient *GravatarClient
+	for _, opt := range opts {
+		switch v := opt.(type) {
+		case string:
+			if commDir == "" {
+				commDir = v
+			}
+		case *GravatarClient:
+			gClient = v
 		}
-	} else {
-		commDir = "/var/lib/penguins-census/community"
+	}
+	if commDir == "" {
+		if dataPath != "" {
+			fi, err := os.Stat(dataPath)
+			if err == nil && fi.IsDir() {
+				commDir = filepath.Join(dataPath, "community")
+			} else {
+				commDir = filepath.Join(filepath.Dir(dataPath), "community")
+			}
+		} else {
+			commDir = "/var/lib/penguins-census/community"
+		}
+	}
+	if gClient == nil {
+		gClient = defaultGravatarClient
 	}
 
 	activeArtisansMap := make(map[string]CommunityProfile)
@@ -697,11 +819,11 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 				}
 				var p CommunityProfile
 				if err := json.Unmarshal(data, &p); err == nil && isCommunityProfileEnabled(p) {
-					if p.ID == "" {
-						p.ID = p.UUID
+					if p.AuthorID == "" {
+						p.AuthorID = strings.TrimSuffix(entry.Name(), ".json")
 					}
-					if p.UUID == "" {
-						p.UUID = p.ID
+					if p.ClaimedUUIDs == nil {
+						p.ClaimedUUIDs = []string{}
 					}
 					if p.GetID() != "" {
 						activeArtisansMap[p.GetID()] = p
@@ -712,8 +834,11 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 	}
 
 	directMachines := make(map[string]map[string]bool)
-	for aID := range activeArtisansMap {
+	for aID, p := range activeArtisansMap {
 		directMachines[aID] = make(map[string]bool)
+		for _, u := range p.ClaimedUUIDs {
+			directMachines[aID][u] = true
+		}
 	}
 	parentMap := make(map[string]string)
 
@@ -748,15 +873,13 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 		if uuid == "" {
 			return
 		}
-		artisanID := strings.TrimSpace(rec.ArtisanID)
-		if artisanID != "" {
-			if _, ok := activeArtisansMap[artisanID]; ok {
-				directMachines[artisanID][uuid] = true
-			}
+		authorID := strings.TrimSpace(rec.AuthorID)
+		if authorID == "" {
+			authorID = strings.TrimSpace(rec.ArtisanID)
 		}
-		for pID, p := range activeArtisansMap {
-			if uuid == pID || (p.UUID != "" && uuid == p.UUID) {
-				directMachines[pID][uuid] = true
+		if authorID != "" {
+			if _, ok := activeArtisansMap[authorID]; ok {
+				directMachines[authorID][uuid] = true
 			}
 		}
 		parentID := strings.TrimSpace(rec.ParentID)
@@ -875,20 +998,17 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 			Sysinstall:    r.Action == "sysinstall",
 		}
 
-		directArtisan, derivedArtisan := resolveArtisan(r, directMachines, parentMap, activeArtisansMap)
-		artisanID := directArtisan
-		if artisanID == "" {
-			artisanID = derivedArtisan
+		directAuthor, derivedAuthor := resolveAuthor(r, directMachines, parentMap, activeArtisansMap)
+		authorID := directAuthor
+		if authorID == "" {
+			authorID = derivedAuthor
 		}
-		if artisanID != "" {
-			if artisan, ok := activeArtisansMap[artisanID]; ok {
-				ev.ArtisanNickname = artisan.Nickname
-				if isSafeURL(artisan.SourceURL) {
-					ev.ArtisanURL = artisan.SourceURL
-				} else {
-					ev.ArtisanURL = "/api/community"
-				}
-			}
+		if authorID != "" {
+			dispName, _, profURL := gClient.Resolve(authorID)
+			ev.AuthorNickname = dispName
+			ev.AuthorURL = profURL
+			ev.ArtisanNickname = dispName
+			ev.ArtisanURL = profURL
 		}
 		return ev
 	}
@@ -911,14 +1031,14 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 
 	// Aggregate unique sysinstall installations
 	type groupKey struct {
-		country         string
-		distro          string
-		desktop         string
-		displayServer   string
-		arch            string
-		eggsVersion     string
-		artisanNickname string
-		artisanURL      string
+		country        string
+		distro         string
+		desktop        string
+		displayServer  string
+		arch           string
+		eggsVersion    string
+		authorNickname string
+		authorURL      string
 	}
 	groupCounts := make(map[groupKey]int)
 	for _, r := range uniqueSysinstalls {
@@ -947,33 +1067,28 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 			ver = "unknown"
 		}
 
-		directArtisan, derivedArtisan := resolveArtisan(r, directMachines, parentMap, activeArtisansMap)
-		artisanID := directArtisan
-		if artisanID == "" {
-			artisanID = derivedArtisan
+		directAuthor, derivedAuthor := resolveAuthor(r, directMachines, parentMap, activeArtisansMap)
+		authorID := directAuthor
+		if authorID == "" {
+			authorID = derivedAuthor
 		}
-		artisanNick := ""
-		artisanURL := ""
-		if artisanID != "" {
-			if artisan, ok := activeArtisansMap[artisanID]; ok {
-				artisanNick = artisan.Nickname
-				if isSafeURL(artisan.SourceURL) {
-					artisanURL = artisan.SourceURL
-				} else {
-					artisanURL = "/api/community"
-				}
-			}
+		authorNick := ""
+		authorURL := ""
+		if authorID != "" {
+			dispName, _, profURL := gClient.Resolve(authorID)
+			authorNick = dispName
+			authorURL = profURL
 		}
 
 		key := groupKey{
-			country:         country,
-			distro:          distro,
-			desktop:         desktop,
-			displayServer:   displayServer,
-			arch:            arch,
-			eggsVersion:     ver,
-			artisanNickname: artisanNick,
-			artisanURL:      artisanURL,
+			country:        country,
+			distro:         distro,
+			desktop:        desktop,
+			displayServer:  displayServer,
+			arch:           arch,
+			eggsVersion:    ver,
+			authorNickname: authorNick,
+			authorURL:      authorURL,
 		}
 		groupCounts[key]++
 	}
@@ -988,8 +1103,10 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 			Arch:            k.arch,
 			EggsVersion:     k.eggsVersion,
 			SumSysinstall:   count,
-			ArtisanNickname: k.artisanNickname,
-			ArtisanURL:      k.artisanURL,
+			AuthorNickname:  k.authorNickname,
+			AuthorURL:       k.authorURL,
+			ArtisanNickname: k.authorNickname,
+			ArtisanURL:      k.authorURL,
 		})
 	}
 
@@ -1015,7 +1132,7 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 		if topList[i].EggsVersion != topList[j].EggsVersion {
 			return topList[i].EggsVersion < topList[j].EggsVersion
 		}
-		return topList[i].ArtisanNickname < topList[j].ArtisanNickname
+		return topList[i].AuthorNickname < topList[j].AuthorNickname
 	})
 
 	if len(topList) > 10 {
@@ -1032,8 +1149,9 @@ func loadCensusSummary(dataPath string, commDirs ...string) (CensusSummary, erro
 	}
 
 	if commDir != "" {
-		if artisans, err := loadEnrichedArtisans(dataPath, commDir); err == nil {
-			summary.Artisans = artisans
+		if authors, err := loadEnrichedAuthors(dataPath, commDir); err == nil {
+			summary.Authors = authors
+			summary.Artisans = authors
 		}
 	}
 

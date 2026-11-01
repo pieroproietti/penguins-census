@@ -41,29 +41,19 @@ var (
 )
 
 type CommunityProfile struct {
-	ID        string            `json:"id,omitempty"`
-	UUID      string            `json:"uuid"`
-	AuthType  string            `json:"auth_type,omitempty"`
-	AuthID    string            `json:"auth_id,omitempty"`
-	TokenHash string            `json:"token_hash,omitempty"`
-	Nickname  string            `json:"nickname,omitempty"`
-	Location  string            `json:"location,omitempty"`
-	Bio       string            `json:"bio,omitempty"`
-	Contact   string            `json:"contact,omitempty"`
-	Socials   map[string]string `json:"socials,omitempty"`
-	SourceURL string            `json:"source_url,omitempty"`
-	Enabled   *bool             `json:"enabled,omitempty"`
-	UpdatedAt string            `json:"updated_at,omitempty"`
+	AuthorID     string   `json:"author_id"`
+	TokenHash    string   `json:"token_hash"`
+	ClaimedUUIDs []string `json:"claimed_uuids"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
 }
 
 func (p CommunityProfile) GetID() string {
-	if p.ID != "" {
-		return p.ID
-	}
-	return p.UUID
+	return p.AuthorID
 }
 
-type ArtisanLiveSummary struct {
+type AuthorLiveSummary struct {
 	DistroName string `json:"distro_name"`
 	Version    string `json:"version,omitempty"`
 	Desktop    string `json:"desktop,omitempty"`
@@ -72,7 +62,7 @@ type ArtisanLiveSummary struct {
 	LastSeen   string `json:"last_seen,omitempty"`
 }
 
-type ArtisanRemasterInfo struct {
+type AuthorRemasterInfo struct {
 	Distro         DistroInfo `json:"distro"`
 	System         SystemInfo `json:"system"`
 	Country        string     `json:"country,omitempty"`
@@ -81,60 +71,37 @@ type ArtisanRemasterInfo struct {
 	Count          int        `json:"count"`
 }
 
-type ArtisanProfile struct {
-	ID             string               `json:"id,omitempty"`
-	UUID           string               `json:"uuid"`
-	AuthType       string               `json:"auth_type,omitempty"`
-	Nickname       string               `json:"nickname,omitempty"`
-	Location       string               `json:"location,omitempty"`
-	Bio            string               `json:"bio,omitempty"`
-	Contact        string               `json:"contact,omitempty"`
-	Socials        map[string]string    `json:"socials,omitempty"`
-	SourceURL      string               `json:"source_url,omitempty"`
-	Enabled        *bool                `json:"enabled,omitempty"`
-	UpdatedAt      string               `json:"updated_at,omitempty"`
-	Country        string               `json:"country,omitempty"`
-	LastRemasterAt string               `json:"last_remaster_at,omitempty"`
-	MachinesCount  int                  `json:"machines_count"`
-	RemasterCount  int                  `json:"remaster_count"`
-	InstallsCount  int                  `json:"installs_count"`
-	LiveDistros    []ArtisanLiveSummary `json:"live_distros,omitempty"`
-	LatestRemaster *ArtisanRemasterInfo `json:"latest_remaster,omitempty"`
+type AuthorProfile struct {
+	AuthorID       string              `json:"author_id"`
+	DisplayName    string              `json:"display_name"`
+	AvatarURL      string              `json:"avatar_url"`
+	ProfileURL     string              `json:"profile_url"`
+	ClaimedUUIDs   []string            `json:"claimed_uuids,omitempty"`
+	Enabled        bool                `json:"enabled"`
+	CreatedAt      string              `json:"created_at,omitempty"`
+	UpdatedAt      string              `json:"updated_at,omitempty"`
+	Country        string              `json:"country,omitempty"`
+	LastRemasterAt string              `json:"last_remaster_at,omitempty"`
+	MachinesCount  int                 `json:"machines_count"`
+	RemasterCount  int                 `json:"remaster_count"`
+	InstallsCount  int                 `json:"installs_count"`
+	LiveDistros    []AuthorLiveSummary `json:"live_distros,omitempty"`
+	LatestRemaster *AuthorRemasterInfo `json:"latest_remaster,omitempty"`
 }
 
-func (a ArtisanProfile) GetID() string {
-	if a.ID != "" {
-		return a.ID
-	}
-	return a.UUID
+func (a AuthorProfile) GetID() string {
+	return a.AuthorID
 }
 
-type SocialLink struct {
-	Platform string
-	Label    string
-	URL      string
-}
+type ArtisanLiveSummary = AuthorLiveSummary
+type ArtisanRemasterInfo = AuthorRemasterInfo
+type ArtisanProfile = AuthorProfile
 
 type rawCommunityPayload struct {
-	ID            string               `json:"id"`
-	UUID          string               `json:"uuid"`
-	AuthType      string               `json:"auth_type"`
-	AuthID        string               `json:"auth_id"`
-	TokenHash     string               `json:"token_hash"`
-	Token         string               `json:"token"`
-	Nickname      string               `json:"nickname"`
-	Location      string               `json:"location"`
-	Bio           string               `json:"bio"`
-	Contact       string               `json:"contact"`
-	Social        interface{}          `json:"social"`
-	Socials       map[string]string    `json:"socials"`
-	SourceURL     string               `json:"source_url"`
-	URL           string               `json:"url"`
-	Website       string               `json:"website"`
-	RepositoryURL string               `json:"repository_url"`
-	RepoURL       string               `json:"repo_url"`
-	Enabled       *bool                `json:"enabled"`
-	Community     *rawCommunityPayload `json:"community"`
+	AuthorID string `json:"author_id"`
+	UUID     string `json:"uuid"`
+	Email    string `json:"email"`
+	Enabled  *bool  `json:"enabled"`
 }
 
 type CensusRecord struct {
@@ -142,7 +109,8 @@ type CensusRecord struct {
 	Country     string      `json:"country"`
 	UUID        string      `json:"uuid"`
 	ParentID    string      `json:"parent_id,omitempty"`
-	ArtisanID   string      `json:"artisan_id,omitempty"`
+	AuthorID    string      `json:"author_id,omitempty"`
+	ArtisanID   string      `json:"artisan_id,omitempty"` // Backwards compatibility
 	EggsVersion string      `json:"eggs_version"`
 	Action      string      `json:"action"`
 	Distro      DistroInfo  `json:"distro"`
@@ -160,6 +128,8 @@ type RecentEvent struct {
 	Clone           bool   `json:"clone"`
 	Remaster        bool   `json:"remaster"`
 	Sysinstall      bool   `json:"sysinstall"`
+	AuthorNickname  string `json:"author_nickname,omitempty"`
+	AuthorURL       string `json:"author_url,omitempty"`
 	ArtisanNickname string `json:"artisan_nickname,omitempty"`
 	ArtisanURL      string `json:"artisan_url,omitempty"`
 }
@@ -172,6 +142,8 @@ type TopInstallation struct {
 	Arch            string `json:"arch"`
 	EggsVersion     string `json:"eggs_version"`
 	SumSysinstall   int    `json:"sum_sysinstall"`
+	AuthorNickname  string `json:"author_nickname,omitempty"`
+	AuthorURL       string `json:"author_url,omitempty"`
 	ArtisanNickname string `json:"artisan_nickname,omitempty"`
 	ArtisanURL      string `json:"artisan_url,omitempty"`
 }
@@ -194,12 +166,12 @@ type RepoAnalysisSummary struct {
 }
 
 type CensusSummary struct {
-	TotalEvents      int                  `json:"total_events"`
-	UniqueMachines   int                  `json:"unique_machines"`
-	TotalCountries   int                  `json:"total_countries"`
-	TotalDistros     int                  `json:"total_distros"`
-	CountryCount     int                  `json:"country,omitempty"`
-	DistroCount      int                  `json:"distro,omitempty"`
+	TotalEvents       int                  `json:"total_events"`
+	UniqueMachines    int                  `json:"unique_machines"`
+	TotalCountries    int                  `json:"total_countries"`
+	TotalDistros      int                  `json:"total_distros"`
+	CountryCount      int                  `json:"country,omitempty"`
+	DistroCount       int                  `json:"distro,omitempty"`
 	RemasterClones    int                  `json:"remaster_clones"`
 	SysinstallClones  int                  `json:"sysinstall_clones"`
 	CoexistCount      int                  `json:"coexist_count"`
@@ -207,14 +179,15 @@ type CensusSummary struct {
 	RecentSysinstalls []RecentEvent        `json:"recent_sysinstalls"`
 	RecentRemasters   []RecentEvent        `json:"recent_remasters"`
 	TopInstallations  []TopInstallation    `json:"top_installations"`
-	Artisans         []ArtisanProfile     `json:"artisans,omitempty"`
-	RepoClients      *RepoAnalysisSummary `json:"repo_clients,omitempty"`
-	ByAction         map[string]int       `json:"by_action"`
-	ByDistro         map[string]int       `json:"by_distro"`
-	ByArch           map[string]int       `json:"by_arch"`
-	ByDesktop        map[string]int       `json:"by_desktop"`
-	ByDisplayServer  map[string]int       `json:"by_display_server"`
-	ByVirt           map[string]int       `json:"by_virt"`
+	Authors           []AuthorProfile      `json:"authors,omitempty"`
+	Artisans          []AuthorProfile      `json:"artisans,omitempty"` // Compatibility alias
+	RepoClients       *RepoAnalysisSummary `json:"repo_clients,omitempty"`
+	ByAction          map[string]int       `json:"by_action"`
+	ByDistro          map[string]int       `json:"by_distro"`
+	ByArch            map[string]int       `json:"by_arch"`
+	ByDesktop         map[string]int       `json:"by_desktop"`
+	ByDisplayServer   map[string]int       `json:"by_display_server"`
+	ByVirt            map[string]int       `json:"by_virt"`
 	ByInit           map[string]int       `json:"by_init"`
 	ByCountry        map[string]int       `json:"by_country"`
 	ByVersion        map[string]int       `json:"by_version"`
