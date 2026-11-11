@@ -17,8 +17,8 @@
     </div>
     <div class="links">
       <a class="btn" href="https://penguins-eggs.net" target="_blank" rel="noopener">Home</a>
-      {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}<a class="btn" href="#unique-ips">Unique IPs</a>{{end}}
       <a class="btn" href="/api/community">🐧 Authors</a>
+      {{if and .RepoClients (gt .RepoClients.UniqueIPs 0)}}<a class="btn" href="#unique-ips">Unique IPs</a>{{end}}
       <a class="btn" href="?format=txt">Plain Text / Markdown</a>
       <a class="btn" href="?format=json">Raw JSON</a>
     </div>
@@ -187,7 +187,7 @@
   <section class="panel" id="unique-ips">
     <span id="repo-clients" class="anchor-alias"></span>
     <span id="unique-ips-last-15-days" class="anchor-alias"></span>
-    <h2><a href="#unique-ips" class="anchor-link">Unique IP last 15 days</a></h2>
+    <h2><a href="#unique-ips" class="anchor-link">Unique IPs since 22 October 2026</a></h2>
     <div class="subtitle" style="margin-bottom: 1rem; color: var(--muted); font-size: 0.85rem;">Estimated from package manager access logs (Debian/APT, Arch/ALPM, RPM/DNF, Alpine/APK) &bull; Updated: {{.RepoClients.GeneratedAt}}</div>
 
     <div class="cards" style="margin-bottom: 1.5rem;">
